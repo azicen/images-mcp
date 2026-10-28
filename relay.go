@@ -20,7 +20,7 @@ type generateInput struct {
 	BaseURL    string `json:"base_url,omitempty" jsonschema:"Optional relay base URL; overrides model family and OPENAI_BASE_URL defaults"`
 	APIKey     string `json:"api_key,omitempty" jsonschema:"Optional relay API key; overrides model family and OPENAI_API_KEY defaults"`
 	Prompt     string `json:"prompt" jsonschema:"Generation or editing instructions"`
-	Model      string `json:"model" jsonschema:"Relay model name; custom names require api or api_type"`
+	Model      string `json:"model,omitempty" jsonschema:"Optional relay model name; defaults to configured default_model. See tool description and list_models for available models."`
 	InputImage string `json:"input_image,omitempty" jsonschema:"Optional local path, HTTP(S) URL, data URI, or raw base64 image"`
 	Size       string `json:"size,omitempty" jsonschema:"Optional GPT Image size"`
 	Quality    string `json:"quality,omitempty" jsonschema:"Optional GPT Image quality"`
@@ -108,11 +108,25 @@ func (c config) route(in generateInput) (string, error) {
 		}
 		return "/images/generations", nil
 	default:
-		return "", fmt.Errorf("unsupported model family: use gemini or gpt-image prefixes, or specify api/api_type")
+		return "", fmt.Errorf("unsupported model %q: use gemini or gpt-image prefixes, or specify api/api_type; available configured models: %s; call list_models for details", in.Model, strings.Join(c.modelIDs(), ", "))
 	}
 }
 
+func (c config) defaultInput(in generateInput) (generateInput, error) {
+	if in.Model == "" {
+		in.Model = c.file.DefaultModel
+	}
+	if in.Model == "" {
+		return in, fmt.Errorf("model is required: supply model or configure default_model; available configured models: %s; call list_models for details", strings.Join(c.modelIDs(), ", "))
+	}
+	return in, nil
+}
+
 func (s *service) request(ctx context.Context, in generateInput) (*http.Request, string, error) {
+	in, err := s.config.defaultInput(in)
+	if err != nil {
+		return nil, "", err
+	}
 	endpoint, err := s.config.route(in)
 	if err != nil {
 		return nil, "", err
@@ -197,6 +211,10 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 }
 
 func (s *service) generate(ctx context.Context, in generateInput) (out generateOutput, err error) {
+	in, err = s.config.defaultInput(in)
+	if err != nil {
+		return out, err
+	}
 	req, endpoint, err := s.request(ctx, in)
 	if err != nil {
 		return out, err

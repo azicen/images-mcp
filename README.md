@@ -38,6 +38,7 @@ Use `-config /absolute/path/to/danqing.yaml` (or `-c`) to select a file. Otherwi
 Example `danqing.yaml`:
 
 ```yaml
+default_model: custom-image-model
 default:
   base_url: https://relay.example/v1
   api_key: your-default-key
@@ -49,6 +50,10 @@ families:
 models:
   custom-image-model:
     api: chat
+    description: Fast image generation and editing through chat completions.
+    notes: |
+      Supply input_image for edits.
+      Size and quality arguments are unavailable on the chat route.
     api_key: your-model-key
 output_dir: /absolute/path/to/generated-images
 ```
@@ -57,9 +62,10 @@ Equivalent JSON is supported with a `.json` extension:
 
 ```json
 {
+  "default_model": "custom-image-model",
   "default": {"base_url": "https://relay.example/v1", "api_key": "your-default-key"},
   "families": {"gemini": {"base_url": "https://gemini-relay.example/v1"}, "gpt-image": {"api_key": "your-gpt-key"}},
-  "models": {"custom-image-model": {"api_type": "chat", "api_key": "your-model-key"}},
+  "models": {"custom-image-model": {"api_type": "chat", "api_key": "your-model-key", "description": "Fast image generation and editing through chat completions.", "notes": "Supply input_image for edits. Size and quality are unavailable on chat."}},
   "output_dir": "/absolute/path/to/generated-images"
 }
 ```
@@ -95,7 +101,13 @@ Family selection uses the explicit API type when supplied, otherwise a case-inse
 
 Output directory priority: file `output_dir`, then `IMAGE_OUTPUT_DIR`, then the OS temporary directory (`os.TempDir()`). Both output settings default to the empty string `""`; when neither supplies a nonempty value, `os.TempDir()` is used. The result is made absolute with `filepath.Abs()`. Relative paths resolve from the server's working directory, including file-supplied paths.
 
-Call `generate_image` with:
+Call `list_models` with `{}` to get a JSON list of configured models sorted by ID. Each record contains `id`, normalized `api` (`chat` or `images`), short `description`, optional detailed `notes`, `supports_edit`, and `is_default`. Both routes support editing. Only exact `models` entries appear; credentials are never returned. Custom names need `api` or `api_type` in their configuration so discovery can determine their route.
+
+Use model `description` for a short summary (roughly 60–80 characters) and optional multi-line `notes` for guidelines, edge cases, and trade-offs. These fields apply only to `models`, not `default` or `families`. The `generate_image` tool description includes the default and sorted model summaries; call `list_models` for full notes.
+
+Omitting `model` or passing `""` uses top-level `default_model`. Without either a model argument or a default, the call returns an informative error. An explicit model overrides the default; unknown unroutable models return the configured model IDs for recovery. Prefix-based and explicit API routing remain available for unlisted models.
+
+With the example configuration, call `generate_image` with `{"prompt":"A watercolor mountain landscape"}` to use the default. To select a model explicitly:
 
 ```json
 {"model":"gemini-3.1-flash-image","prompt":"A watercolor mountain landscape"}

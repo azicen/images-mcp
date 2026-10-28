@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -29,11 +30,21 @@ type fileCredentials struct {
 	APIKey  string `json:"api_key" yaml:"api_key"`
 }
 
+type fileModel struct {
+	API         string `json:"api,omitempty" yaml:"api,omitempty"`
+	APIType     string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
+	BaseURL     string `json:"base_url" yaml:"base_url"`
+	APIKey      string `json:"api_key" yaml:"api_key"`
+	Description string `json:"description" yaml:"description"`
+	Notes       string `json:"notes,omitempty" yaml:"notes,omitempty"`
+}
+
 type fileConfig struct {
-	Default   fileCredentials            `json:"default" yaml:"default"`
-	Families  map[string]fileCredentials `json:"families" yaml:"families"`
-	Models    map[string]fileCredentials `json:"models" yaml:"models"`
-	OutputDir string                     `json:"output_dir" yaml:"output_dir"`
+	DefaultModel string                     `json:"default_model" yaml:"default_model"`
+	Default      fileCredentials            `json:"default" yaml:"default"`
+	Families     map[string]fileCredentials `json:"families" yaml:"families"`
+	Models       map[string]fileModel       `json:"models" yaml:"models"`
+	OutputDir    string                     `json:"output_dir" yaml:"output_dir"`
 }
 
 func parseFlags(args []string, output io.Writer) (string, error) {
@@ -122,9 +133,11 @@ func loadConfig(paths ...string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	for name, model := range file.Models {
-		if _, err := explicitFamily(model.API, model.APIType); err != nil {
+	for name := range file.Models {
+		if family, err := (config{file: file}).modelFamily(generateInput{Model: name}); err != nil {
 			return config{}, fmt.Errorf("model %q: %w", name, err)
+		} else if family == "" {
+			return config{}, fmt.Errorf("model %q: configure api or api_type for an unrecognized model prefix", name)
 		}
 	}
 	c := config{
@@ -185,11 +198,78 @@ func (c config) resolveCredentials(in generateInput) (credentials, error) {
 	return resolved, nil
 }
 
+type modelRecord struct {
+	ID           string `json:"id"`
+	API          string `json:"api"`
+	Description  string `json:"description"`
+	Notes        string `json:"notes,omitempty"`
+	SupportsEdit bool   `json:"supports_edit"`
+	IsDefault    bool   `json:"is_default"`
+}
+
+func (c config) modelIDs() []string {
+	ids := make([]string, 0, len(c.file.Models))
+	for id := range c.file.Models {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (c config) listModels() ([]modelRecord, error) {
+	records := make([]modelRecord, 0, len(c.file.Models))
+	for _, id := range c.modelIDs() {
+		model := c.file.Models[id]
+		family, err := c.modelFamily(generateInput{Model: id})
+		if err != nil {
+			return nil, err
+		}
+		api := "chat"
+		if family == "gpt-image" {
+			api = "images"
+		} else if family != "gemini" {
+			return nil, fmt.Errorf("model %q: configure api or api_type", id)
+		}
+		records = append(records, modelRecord{ID: id, API: api, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
+	}
+	return records, nil
+}
+
+func (c config) generationDescription() string {
+	var b strings.Builder
+	b.WriteString("Generate or edit images through a unified relay and save them locally.\nDefault model: ")
+	if c.file.DefaultModel == "" {
+		b.WriteString("none (supply model)")
+	} else {
+		b.WriteString(c.file.DefaultModel)
+	}
+	b.WriteString(".\nConfigured models (alphabetical):")
+	for _, id := range c.modelIDs() {
+		fmt.Fprintf(&b, "\n- %s: %s", id, c.file.Models[id].Description)
+	}
+	if len(c.file.Models) == 0 {
+		b.WriteString(" none")
+	}
+	b.WriteString("\nCall list_models for complete details and guidelines.")
+	return b.String()
+}
+
 func newServer(s *service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "danqing", Version: "0.1.0"}, nil)
-	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: "Generate or edit images through a unified relay and save them locally. Supports Gemini and GPT Image models."}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
 		return &mcp.CallToolResult{}, out, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their API routes, capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		records, err := s.config.listModels()
+		if err != nil {
+			return nil, nil, err
+		}
+		data, err := json.Marshal(records)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
 	})
 	return server
 }

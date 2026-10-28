@@ -6,7 +6,7 @@ danqing is a stdio MCP server for image generation through OpenAI-compatible rel
 
 ## Architecture and routing
 
-The official github.com/modelcontextprotocol/go-sdk v1.8.0 registers generate_image with mcp.AddTool and runs with mcp.StdioTransport. Configuration, request construction, response extraction, and image storage remain small, independently testable components in package main.
+The official github.com/modelcontextprotocol/go-sdk v1.8.0 registers generate_image and list_models with mcp.AddTool and runs with mcp.StdioTransport. Configuration, request construction, response extraction, and image storage remain small, independently testable components in package main.
 
 * Route A: explicit `api` / `api_type` values `gemini` or `chat`, or model names beginning with gemini when unspecified (for example gemini-3.1-flash-image) use POST /v1/chat/completions with an OpenAI user message. Text-only requests use string content; editing requests use text and image_url content parts. Responses may contain Markdown images, data URIs, raw base64, or structured image_url parts.
 * Route B: explicit `api` / `api_type` values `gpt`, `gpt-image`, or `images`, or model names beginning with gpt-image when unspecified (including gpt-image-2.5, gpt-image-2.5-flare, and gpt-image-2.5-sunburst) use POST /v1/images/generations for text-to-image and POST /v1/images/edits with multipart/form-data and an image file part when input_image is provided. Image responses accept data[].url and data[].b64_json.
@@ -24,7 +24,7 @@ Object properties (additional properties disallowed by SDK inference):
 | Property | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | prompt | string | yes | Nonempty generation/edit instructions |
-| model | string | yes | Relay model name; custom names require explicit API selection |
+| model | string | no | Relay model name; omitted or empty uses top-level default_model; custom names require explicit API selection |
 | api | string | no | API route override: gemini/chat or gpt/gpt-image/images |
 | api_type | string | no | Alias for api |
 | base_url | string | no | Per-request relay base URL override |
@@ -34,6 +34,23 @@ Object properties (additional properties disallowed by SDK inference):
 | quality | string | no | Relay-supported quality; GPT Image routes only |
 
 One request returns every image supplied by the relay. Results contain JSON text and structured metadata: model, route, and images with absolute path, MIME type, and byte size. Failures are MCP tool errors. No API key or full upstream response is included in errors.
+
+## Model discovery
+
+At registration, the `generate_image` tool description includes the current default model (or explicitly indicates none), configured model IDs with their short descriptions sorted alphabetically, and guidance to call `list_models` for complete details and guidelines. Detailed notes are excluded from this summary. Ordering is deterministic for prompt caching. Unknown models that cannot be routed return an error listing configured IDs in alphabetical order; explicit API and prefix routing still allow unlisted models.
+
+`list_models` has description: “List available image generation models, their API routes, capabilities, and guidelines.” Its input is an empty object with no required arguments. It returns JSON text containing a list sorted alphabetically by exact model ID, or `[]` when no models are configured. Each record contains:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| id | string | Exact configured model name |
+| api | string | `chat` or `images`, derived from configured API aliases or model prefix |
+| description | string | Short configured summary, empty if absent |
+| notes | string | Detailed guidelines; omitted if empty |
+| supports_edit | boolean | True for both supported routes |
+| is_default | boolean | Whether the ID equals top-level default_model |
+
+Discovery only lists exact `models` entries, never credentials or family/default objects. A default can refer to an unlisted model when its prefix or request API selection determines routing; it is shown in generation guidance but creates no synthetic discovery record.
 
 ## Parsing and storage
 
@@ -56,7 +73,7 @@ The resolved base URL must be a nonempty HTTP(S) URL without embedded credential
 
 CLI flags `-config PATH` and `-c PATH` select an explicit file; the last occurrence wins. Without either flag, startup searches the working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json`, loading only the first existing file. Missing discovery candidates are skipped; an explicit missing file, unreadable file, invalid file, or unsupported extension fails startup. Help exits successfully; unknown flags, empty explicit paths, and positional arguments fail.
 
-Configuration uses `default`, `families`, `models`, and `output_dir`. Credential objects contain `base_url` and `api_key`. Model entries additionally accept `api` or `api_type`, for example `models: {"custom-model": {"api": "images"}}`. The selected API determines both the request route and the credential family. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
+Configuration uses `default_model`, `default`, `families`, `models`, and `output_dir`. Top-level `default_model` is a model ID string, independent of the `default` credentials object. Missing or empty model arguments use this ID before routing, credential resolution, payload construction, and output metadata. If neither supplies an ID, generation fails before network I/O with guidance to supply `model` or configure `default_model`. Credential objects contain `base_url` and `api_key`. Model entries additionally accept `api` or `api_type`, for example `models: {"custom-model": {"api": "images"}}`. Model entries also accept `description` (short summary, roughly 60–80 characters) and optional `notes` (detailed, potentially multi-line guidelines, edge cases, and trade-offs). Neither field is supported on `default` or `families`. Configured custom names without a recognized prefix must specify `api` or `api_type`; unroutable entries fail startup so discovery can report a valid route for every record. The selected API determines both the request route and the credential family. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
 
 Output directory priority is file `output_dir`, then `IMAGE_OUTPUT_DIR`, then the OS temporary directory (`os.TempDir()`). Both settings default to `""`; absent or empty settings use `os.TempDir()`. The selected path is resolved with `filepath.Abs()`. Relative paths resolve from the server working directory, including paths supplied in a configuration file; the directory is made absolute at startup and created when saving images.
 

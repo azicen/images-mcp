@@ -383,7 +383,7 @@ func TestMCP(t *testing.T) {
 	}
 	defer cs.Close()
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 1 || list.Tools[0].Name != "generate_image" {
+	if err != nil || len(list.Tools) != 2 || list.Tools[0].Name != "generate_image" {
 		t.Fatal(list, err)
 	}
 	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-2.5", "prompt": "draw"}})
@@ -506,7 +506,7 @@ func TestFileResolution(t *testing.T) {
 			}
 			resolve := func() (credentials, error) {
 				c := config{baseURL: levels[5].BaseURL, apiKey: levels[5].APIKey,
-					file: fileConfig{Default: levels[4], Families: map[string]fileCredentials{family: levels[2]}, Models: map[string]fileCredentials{model: levels[1]}},
+					file: fileConfig{Default: levels[4], Families: map[string]fileCredentials{family: levels[2]}, Models: map[string]fileModel{model: {BaseURL: levels[1].BaseURL, APIKey: levels[1].APIKey}}},
 				}
 				env := credentials{baseURL: levels[3].BaseURL, apiKey: levels[3].APIKey}
 				if family == "gemini" {
@@ -538,7 +538,7 @@ func TestFileResolution(t *testing.T) {
 			}
 		})
 	}
-	c := config{baseURL: "https://default.example", apiKey: "default", file: fileConfig{Models: map[string]fileCredentials{"gemini-test": {BaseURL: "invalid", APIKey: "model"}}}}
+	c := config{baseURL: "https://default.example", apiKey: "default", file: fileConfig{Models: map[string]fileModel{"gemini-test": {BaseURL: "invalid", APIKey: "model"}}}}
 	if _, err := c.resolveCredentials(generateInput{Model: "gemini-test"}); err == nil {
 		t.Fatal("invalid model override fell back")
 	}
@@ -546,7 +546,7 @@ func TestFileResolution(t *testing.T) {
 	if err != nil || got.apiKey != "default" {
 		t.Fatal("model matching was not exact", err)
 	}
-	c.file.Models["gemini-test"] = fileCredentials{APIKey: "bad key"}
+	c.file.Models["gemini-test"] = fileModel{APIKey: "bad key"}
 	if _, err := c.resolveCredentials(generateInput{Model: "gemini-test"}); err == nil {
 		t.Fatal("invalid model key fell back")
 	}
@@ -661,7 +661,7 @@ func TestExplicitAPIRouting(t *testing.T) {
 							if chat {
 								in.Model, opposite = "gpt-image-custom", "chat"
 							}
-							c.file.Models = map[string]fileCredentials{in.Model: {API: opposite}}
+							c.file.Models = map[string]fileModel{in.Model: {API: opposite}}
 						}
 						req, got, err := (&service{config: c}).request(context.Background(), in)
 						if err != nil {
@@ -740,5 +740,165 @@ func TestUnsetOutputDirectory(t *testing.T) {
 	}
 	if c.outputDir != want {
 		t.Fatalf("output directory = %q, want %q", c.outputDir, want)
+	}
+}
+
+// TestModelDiscovery paths: configured/empty catalogs, explicit/prefix routes,
+// default/nondefault records, present/absent notes, and omitted/empty/explicit
+// model arguments. MCP assertions cover schema optionality and sorted guidance;
+// relay assertions verify the resolved model reaches both payload and result.
+func TestModelDiscovery(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if payload.Model != "alpha" && payload.Model != "gpt-image-zeta" {
+			t.Errorf("unexpected model %q", payload.Model)
+		}
+		if r.URL.Path != "/v1/images/generations" {
+			t.Errorf("unexpected route %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"b64_json": testPNG}}})
+	}))
+	defer relay.Close()
+	c := config{baseURL: relay.URL, apiKey: "secret-key", outputDir: t.TempDir(), file: fileConfig{DefaultModel: "alpha", Models: map[string]fileModel{
+		"gpt-image-zeta": {Description: "Last model"},
+		"gemini-middle":  {Description: "Chat model"},
+		"alpha":          {APIType: "images", Description: "First model", Notes: "Detailed guidelines.\nUse for editing."},
+	}}}
+	ctx := context.Background()
+	a, b := mcp.NewInMemoryTransports()
+	ss, err := newServer(&service{config: c, client: relay.Client()}).Connect(ctx, a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation *mcp.Tool
+	for _, tool := range tools.Tools {
+		if tool.Name == "generate_image" {
+			generation = tool
+		}
+	}
+	if generation == nil {
+		t.Fatal("generate_image missing")
+	}
+	wantDescription := "Generate or edit images through a unified relay and save them locally.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
+	if generation.Description != wantDescription {
+		t.Fatalf("description = %q", generation.Description)
+	}
+	for i := 0; i < 20; i++ {
+		if c.generationDescription() != wantDescription {
+			t.Fatal("unstable description")
+		}
+	}
+	raw, err := json.Marshal(generation.InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(schema.Required, []string{"prompt"}) {
+		t.Fatalf("required = %v", schema.Required)
+	}
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "list_models", Arguments: map[string]any{}})
+	if err != nil || result.IsError {
+		t.Fatal(result, err)
+	}
+	content := result.Content[0].(*mcp.TextContent).Text
+	var records []modelRecord
+	if err := json.Unmarshal([]byte(content), &records); err != nil {
+		t.Fatal(err)
+	}
+	want := []modelRecord{
+		{ID: "alpha", API: "images", Description: "First model", Notes: c.file.Models["alpha"].Notes, SupportsEdit: true, IsDefault: true},
+		{ID: "gemini-middle", API: "chat", Description: "Chat model", SupportsEdit: true},
+		{ID: "gpt-image-zeta", API: "images", Description: "Last model", SupportsEdit: true},
+	}
+	if !reflect.DeepEqual(records, want) {
+		t.Fatalf("records = %+v", records)
+	}
+	if strings.Count(content, `"notes"`) != 1 || strings.Contains(content, "secret-key") {
+		t.Fatalf("unexpected fields: %s", content)
+	}
+	for _, args := range []map[string]any{{"prompt": "draw"}, {"prompt": "draw", "model": ""}, {"prompt": "draw", "model": "gpt-image-zeta"}} {
+		result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: args})
+		if err != nil || result.IsError {
+			t.Fatal(result, err)
+		}
+		raw, _ := json.Marshal(result.StructuredContent)
+		var out generateOutput
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		expected := "alpha"
+		if args["model"] == "gpt-image-zeta" {
+			expected = "gpt-image-zeta"
+		}
+		if out.Model != expected || len(out.Images) != 1 {
+			t.Fatalf("output = %+v", out)
+		}
+	}
+	result, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"prompt": "draw", "model": "typo"}})
+	if err != nil || !result.IsError {
+		t.Fatal(result, err)
+	}
+	if msg := result.Content[0].(*mcp.TextContent).Text; !strings.Contains(msg, "alpha, gemini-middle, gpt-image-zeta") {
+		t.Fatal(msg)
+	}
+	empty, err := (config{}).listModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(empty)
+	if string(raw) != "[]" {
+		t.Fatalf("empty catalog = %s", raw)
+	}
+	if _, err := (&service{}).generate(ctx, generateInput{Prompt: "draw", API: "images"}); err == nil || !strings.Contains(err.Error(), "default_model") {
+		t.Fatalf("missing default error = %v", err)
+	}
+}
+
+// TestModelMetadataConfig paths: YAML/JSON preserve short and detailed model
+// text and default selection; unroutable custom entries fail with API guidance.
+func TestModelMetadataConfig(t *testing.T) {
+	for _, tt := range []struct{ name, body string }{
+		{"config.yaml", "default_model: custom\nmodels:\n  custom:\n    api: chat\n    description: Short summary\n    notes: |\n      First line\n      Second line\n"},
+		{"config.json", `{"default_model":"custom","models":{"custom":{"api":"chat","description":"Short summary","notes":"First line\nSecond line\n"}}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			if err := os.WriteFile(path, []byte(tt.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := loadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.file.DefaultModel != "custom" || c.file.Models["custom"].Description != "Short summary" || c.file.Models["custom"].Notes != "First line\nSecond line\n" {
+				t.Fatalf("config = %+v", c.file)
+			}
+			if err := os.WriteFile(path, []byte(`{"models":{"custom":{}}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "api") {
+				t.Fatalf("unroutable config error = %v", err)
+			}
+		})
 	}
 }

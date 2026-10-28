@@ -19,7 +19,11 @@ Configure your MCP client (use absolute paths):
       "command": "/absolute/path/to/danqing/bin/danqing",
       "env": {
         "OPENAI_BASE_URL": "https://relay.example/v1",
-        "OPENAI_API_KEY": "your-relay-key",
+        "OPENAI_API_KEY": "your-default-key",
+        "GEMINI_BASE_URL": "https://gemini-relay.example/v1",
+        "GEMINI_API_KEY": "optional-gemini-key",
+        "GPT_IMAGE_BASE_URL": "https://gpt-relay.example/v1",
+        "GPT_IMAGE_API_KEY": "optional-gpt-key",
         "IMAGE_OUTPUT_DIR": "/absolute/path/to/generated-images"
       }
     }
@@ -27,7 +31,15 @@ Configure your MCP client (use absolute paths):
 }
 ```
 
-`OPENAI_BASE_URL` and `OPENAI_API_KEY` are required. `IMAGE_OUTPUT_DIR` defaults to `./images` relative to the server's working directory.
+### Credential Resolution Hierarchy
+Each field (`base_url` and `api_key`) resolves independently:
+1. **Per-request parameters**: `base_url` or `api_key` passed in the `generate_image` tool call.
+2. **Model family environment**:
+   - Gemini models (`gemini*`): `GEMINI_BASE_URL`, `GEMINI_API_KEY`.
+   - GPT Image models (`gpt-image*`): `GPT_IMAGE_BASE_URL`, `GPT_IMAGE_API_KEY`.
+3. **Global default**: `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
+
+`IMAGE_OUTPUT_DIR` defaults to `./images` relative to the server's working directory.
 
 Call `generate_image` with:
 

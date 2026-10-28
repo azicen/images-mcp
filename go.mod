@@ -1,4 +1,4 @@
-module images-mcp
+module github.com/azicen/images-mcp
 
 go 1.27.1
 

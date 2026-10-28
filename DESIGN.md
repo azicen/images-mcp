@@ -29,8 +29,7 @@ Object properties (additional properties disallowed by SDK inference):
 | api_type | string | no | Alias for api |
 | base_url | string | no | Per-request relay base URL override |
 | api_key | string | no | Per-request bearer credential override |
-| input_image | string | no | Backward-compatible single image; prepended to input_images |
-| input_images | array of strings | no | Ordered paths, HTTP(S) URLs, Data URIs, or raw base64; first combined image is primary, others are style/context references |
+| input_images | array of strings | no | Ordered paths, HTTP(S) URLs, Data URIs, or raw base64; first image is primary, others are style/context references |
 | size | string | no | Relay-supported image size; GPT Image routes only |
 | quality | string | no | Relay-supported quality; GPT Image routes only |
 
@@ -92,10 +91,10 @@ Model availability and optional size/quality values are relay-specific. The name
 
 ## Multi-image input normalization and assembly
 
-`generateInput` lives in main.go. `normalizedInputImages` prepends nonblank legacy `input_image`, then appends nonblank `input_images` entries without deduplication, preserving original argument indices for errors. More than 16 combined images fail before network I/O. No inputs selects text-to-image; any inputs select editing. The first is the primary image to edit; subsequent images are style/context references, with model behavior guided by the prompt.
+`generateInput` lives in main.go. `normalizedInputImages` validates nonblank `input_images` entries without deduplication, preserving order and original array indices for errors. More than 16 images fail before network I/O. No inputs selects text-to-image; any inputs select editing. The first is the primary image to edit; subsequent images are style/context references, with model behavior guided by the prompt.
 
-The shared input loader in images.go enforces 32 MiB per image and `maxTotalInputBytes = 64 << 20` decoded bytes per request. Loading stops at the first error or cumulative overflow, before loading subsequent references or sending a generation request. Error context identifies `input_image` or the original zero-based `input_images[i]`; base64 contents are not echoed. Input GIF/SVG are rejected regardless of extensions or Data URI labels; output GIF remains supported.
+The shared input loader in images.go enforces 32 MiB per image and `maxTotalInputBytes = 64 << 20` decoded bytes per request. Loading stops at the first error or cumulative overflow, before loading subsequent references or sending a generation request. Error context identifies the original zero-based `input_images[i]`; base64 contents are not echoed. Input GIF/SVG are rejected regardless of extensions or Data URI labels; output GIF remains supported.
 
 In relay.go, GPT Image sends multipart POST /v1/images/edits: one input uses `name="image"`; multiple inputs all use `name="image[]"`. Each file part has a generated filename with detected extension and its own Content-Type. Gemini sends POST /v1/chat/completions: user content starts with the prompt text part, followed by ordered image_url parts using detected MIME and standard base64 Data URIs.
 
-Tests cover legacy and array single-image fields, repeated multi-image fields and bytes, mixed parameters, ordered Gemini parts, count limits, rejected MIME, indexed errors, exact aggregate budget and overflow, and output GIF preservation. Run `go test -race -cover ./...`, `go vet ./...`, and `go build -o bin/images-mcp .`.
+Tests cover single-image arrays, repeated multi-image fields and bytes, ordered Gemini parts, count limits, rejected MIME, indexed errors, exact aggregate budget and overflow, and output GIF preservation. Run `go test -race -cover ./...`, `go vet ./...`, and `go build -o bin/images-mcp .`.

@@ -28,8 +28,7 @@ type generateInput struct {
 	APIKey      string   `json:"api_key,omitempty" jsonschema:"Optional relay API key; overrides model family and OPENAI_API_KEY defaults"`
 	Prompt      string   `json:"prompt" jsonschema:"Generation or editing instructions"`
 	Model       string   `json:"model,omitempty" jsonschema:"Optional relay model name; defaults to configured default_model. See tool description and list_models for available models."`
-	InputImage  string   `json:"input_image,omitempty" jsonschema:"Backward-compatible single input image; prepended to input_images as the primary image"`
-	InputImages []string `json:"input_images,omitempty" jsonschema:"Ordered reference images: local paths, HTTP(S) URLs, data URIs, or raw base64; first combined image is primary, remaining images are style/context references; max 16 images, PNG/JPEG/WebP only, 32 MiB each and 64 MiB total"`
+	InputImages []string `json:"input_images,omitempty" jsonschema:"Input images: local paths, HTTP(S) URLs, Data URIs, or raw Base64; one image for editing, multiple images use the first as primary and the rest as references; max 16 images, PNG/JPEG/WebP only, 32 MiB each and 64 MiB total"`
 	Size        string   `json:"size,omitempty" jsonschema:"Optional GPT Image size"`
 	Quality     string   `json:"quality,omitempty" jsonschema:"Optional GPT Image quality"`
 }
@@ -37,9 +36,6 @@ type generateInput struct {
 // normalizedInputImages preserves the primary image and original parameter indices.
 func (in generateInput) normalizedInputImages() ([]inputImageSource, error) {
 	var sources []inputImageSource
-	if strings.TrimSpace(in.InputImage) != "" {
-		sources = append(sources, inputImageSource{ref: in.InputImage, source: "input_image"})
-	}
 	for i, ref := range in.InputImages {
 		if strings.TrimSpace(ref) != "" {
 			sources = append(sources, inputImageSource{ref: ref, source: fmt.Sprintf("input_images[%d]", i)})
@@ -263,7 +259,7 @@ func (c config) listModels() ([]modelRecord, error) {
 
 func (c config) generationDescription() string {
 	var b strings.Builder
-	b.WriteString("Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Legacy input_image is prepended. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: ")
+	b.WriteString("Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: ")
 	if c.file.DefaultModel == "" {
 		b.WriteString("none (supply model)")
 	} else {

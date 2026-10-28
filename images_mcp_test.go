@@ -34,7 +34,7 @@ func TestRoute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.model+tt.input+tt.size, func(t *testing.T) {
-			got, err := route(generateInput{Model: tt.model, InputImage: tt.input, Prompt: tt.prompt, Size: tt.size})
+			got, err := route(generateInput{Model: tt.model, InputImages: []string{tt.input}, Prompt: tt.prompt, Size: tt.size})
 			if (err != nil) != tt.bad || got != tt.want {
 				t.Fatalf("route = %q, %v", got, err)
 			}
@@ -106,7 +106,7 @@ func TestPayloads(t *testing.T) {
 				s := &service{config: config{baseURL: "https://relay.example/v1", apiKey: "key"}, client: http.DefaultClient}
 				in := generateInput{Model: model, Prompt: "draw"}
 				if edit {
-					in.InputImage = "data:image/png;base64," + testPNG
+					in.InputImages = []string{"data:image/png;base64," + testPNG}
 				}
 				if strings.HasPrefix(model, "gpt") {
 					in.Size = "1024x1024"
@@ -157,7 +157,7 @@ func TestPayloads(t *testing.T) {
 						}
 						if edit {
 							parts := msg["content"].([]any)
-							if len(parts) != 2 || parts[1].(map[string]any)["image_url"].(map[string]any)["url"] != in.InputImage {
+							if len(parts) != 2 || parts[1].(map[string]any)["image_url"].(map[string]any)["url"] != in.InputImages[0] {
 								t.Fatal(parts)
 							}
 						} else if msg["content"] != "draw" {
@@ -634,7 +634,7 @@ func TestExplicitAPIRouting(t *testing.T) {
 						}}}
 						in := generateInput{Model: "custom-model", Prompt: "draw"}
 						if edit {
-							in.InputImage = "data:image/png;base64," + testPNG
+							in.InputImages = []string{"data:image/png;base64," + testPNG}
 						}
 						encoded, err := json.Marshal(map[string]string{field: value})
 						if err != nil {
@@ -794,7 +794,7 @@ func TestModelDiscovery(t *testing.T) {
 	if generation == nil {
 		t.Fatal("generate_image missing")
 	}
-	wantDescription := "Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Legacy input_image is prepended. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
+	wantDescription := "Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
 	if generation.Description != wantDescription {
 		t.Fatalf("description = %q", generation.Description)
 	}
@@ -903,7 +903,7 @@ func TestModelMetadataConfig(t *testing.T) {
 	}
 }
 
-// TestMultiImagePayloads covers legacy-only, array-only, and combined inputs.
+// TestMultiImagePayloads covers single-image and multiple-image arrays.
 // Branches: one image -> image; multiple -> image[]; chat -> ordered text/images.
 // Distinct image bytes verify ordering, duplicates remain meaningful references.
 func TestMultiImagePayloads(t *testing.T) {
@@ -911,22 +911,19 @@ func TestMultiImagePayloads(t *testing.T) {
 	second := append(append([]byte(nil), raw...), 1)
 	refs := []string{testPNG, base64.StdEncoding.EncodeToString(second)}
 	for _, model := range []string{"gpt-image-test", "gemini-test"} {
-		for _, mode := range []string{"legacy", "single-array", "multi", "combined"} {
+		for _, mode := range []string{"single-array", "multi", "duplicates"} {
 			t.Run(model+"/"+mode, func(t *testing.T) {
 				in := generateInput{Model: model, Prompt: "edit"}
 				want := [][]byte{raw}
 				switch mode {
-				case "legacy":
-					in.InputImage = refs[0]
 				case "single-array":
 					in.InputImages = refs[:1]
 				case "multi":
 					in.InputImages = []string{"", refs[0], " ", refs[1]}
 					want = append(want, second)
-				case "combined":
-					in.InputImage = refs[0]
-					in.InputImages = refs[1:]
-					want = append(want, second)
+				case "duplicates":
+					in.InputImages = []string{refs[0], refs[0]}
+					want = append(want, raw)
 				}
 				s := &service{config: config{baseURL: "https://relay.example", apiKey: "key"}, client: http.DefaultClient}
 				req, endpoint, err := s.request(context.Background(), in)
@@ -1001,9 +998,9 @@ func TestMultiImagePayloads(t *testing.T) {
 // Count errors must precede all network I/O, including reference downloads.
 func TestInputImageValidation(t *testing.T) {
 	s := &service{config: config{baseURL: "https://relay.example", apiKey: "key", outputDir: t.TempDir()}, client: http.DefaultClient}
-	in := generateInput{InputImage: "primary", InputImages: []string{"", "second", " "}}
+	in := generateInput{InputImages: []string{"primary", "second", "", " "}}
 	sources, err := in.normalizedInputImages()
-	if err != nil || !reflect.DeepEqual(sources, []inputImageSource{{ref: "primary", source: "input_image"}, {ref: "second", source: "input_images[1]"}}) {
+	if err != nil || !reflect.DeepEqual(sources, []inputImageSource{{ref: "primary", source: "input_images[0]"}, {ref: "second", source: "input_images[1]"}}) {
 		t.Fatal(sources, err)
 	}
 	in = generateInput{Model: "gpt-image", Prompt: "edit", InputImages: make([]string, 16)}
@@ -1013,7 +1010,7 @@ func TestInputImageValidation(t *testing.T) {
 	if _, err := in.normalizedInputImages(); err != nil {
 		t.Fatal(err)
 	}
-	in.InputImage = testPNG
+	in.InputImages = append(in.InputImages, testPNG)
 	if _, _, err := s.request(context.Background(), in); err == nil || !strings.Contains(err.Error(), "16") {
 		t.Fatal(err)
 	}
@@ -1024,7 +1021,7 @@ func TestInputImageValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := s.request(context.Background(), generateInput{Model: "gpt-image", Prompt: "edit", InputImage: gif}); err == nil || !strings.Contains(err.Error(), "input_image:") {
+	if _, _, err := s.request(context.Background(), generateInput{Model: "gpt-image", Prompt: "edit", InputImages: []string{gif}}); err == nil || !strings.Contains(err.Error(), "input_images[0]:") {
 		t.Fatal(err)
 	}
 	if out, err := s.saveImage(context.Background(), gif); err != nil || out.MIMEType != "image/gif" {

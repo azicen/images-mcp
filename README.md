@@ -10,32 +10,22 @@ go test -race -cover ./...
 go build -o bin/images-mcp .
 ```
 
-Configure your MCP client (use absolute paths):
+## Configure your MCP client
+
+Use a configuration file (recommended) and absolute paths:
 
 ```json
 {
   "mcpServers": {
     "images-mcp": {
       "command": "/absolute/path/to/images-mcp/bin/images-mcp",
-      "env": {
-        "OPENAI_BASE_URL": "https://relay.example/v1",
-        "OPENAI_API_KEY": "your-default-key",
-        "GEMINI_BASE_URL": "https://gemini-relay.example/v1",
-        "GEMINI_API_KEY": "optional-gemini-key",
-        "GPT_IMAGE_BASE_URL": "https://gpt-relay.example/v1",
-        "GPT_IMAGE_API_KEY": "optional-gpt-key",
-        "IMAGE_OUTPUT_DIR": "/absolute/path/to/generated-images"
-      }
+      "args": ["-config", "/absolute/path/to/images-mcp.yaml"]
     }
   }
 }
 ```
 
-### Configuration files
-
-Start with [images-mcp.example.yaml](images-mcp.example.yaml), a commented template covering all configuration fields. Copy it to `images-mcp.yaml` and replace the placeholder relay URLs and API keys.
-
-Use `-config /absolute/path/to/images-mcp.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `images-mcp.yaml`, `images-mcp.yml`, then `images-mcp.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
+The `images-mcp.yaml` file controls `default_model`, the `models` catalog, model `description` and `notes` for agent discovery, and API routing and credentials:
 
 Example `images-mcp.yaml`:
 
@@ -72,21 +62,9 @@ Equivalent JSON is supported with a `.json` extension:
 }
 ```
 
-MCP client configuration using a file:
+Start with [images-mcp.example.yaml](images-mcp.example.yaml), a commented template covering all configuration fields. Copy it to `images-mcp.yaml` and replace the placeholder relay URLs and API keys. Keep files containing API keys private.
 
-```json
-{
-  "mcpServers": {
-    "images-mcp": {
-      "command": "/absolute/path/to/images-mcp/bin/images-mcp",
-      "args": ["-config", "/absolute/path/to/images-mcp.yaml"],
-      "env": {"OPENAI_API_KEY": "optional-fallback-key"}
-    }
-  }
-}
-```
-
-The environment-only client example above also remains supported. Keep files containing API keys private.
+Use `-config /absolute/path/to/images-mcp.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `images-mcp.yaml`, `images-mcp.yml`, then `images-mcp.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
 
 ### Credential resolution
 
@@ -108,6 +86,33 @@ Call `list_models` with `{}` to get a JSON list of configured models sorted by I
 Use model `description` for a short summary (roughly 60–80 characters) and optional multi-line `notes` for guidelines, edge cases, and trade-offs. These fields apply only to `models`, not `default` or `families`. The `generate_image` tool description includes the default and sorted model summaries; call `list_models` for full notes.
 
 Omitting `model` or passing `""` uses top-level `default_model`. Without either a model argument or a default, the call returns an informative error. An explicit model overrides the default; unknown unroutable models return the configured model IDs for recovery. Prefix-based and explicit API routing remain available for unlisted models.
+
+### Optional: Environment-only fallback
+
+Environment variables are supported as credential and output-directory fallbacks, including when using a configuration file; precedence is described above. To use only environment variables, omit `-config` and ensure no configuration file is present in the server's working directory:
+
+```json
+{
+  "mcpServers": {
+    "images-mcp": {
+      "command": "/absolute/path/to/images-mcp/bin/images-mcp",
+      "env": {
+        "OPENAI_BASE_URL": "https://relay.example/v1",
+        "OPENAI_API_KEY": "your-default-key",
+        "GEMINI_BASE_URL": "https://gemini-relay.example/v1",
+        "GEMINI_API_KEY": "optional-gemini-key",
+        "GPT_IMAGE_BASE_URL": "https://gpt-relay.example/v1",
+        "GPT_IMAGE_API_KEY": "optional-gpt-key",
+        "IMAGE_OUTPUT_DIR": "/absolute/path/to/generated-images"
+      }
+    }
+  }
+}
+```
+
+Without a configuration file, model discovery has no catalog: `list_models` returns an empty list, and custom model descriptions, notes, and `default_model` are unavailable. Supply `model` explicitly for each generation request.
+
+## Generate images
 
 With the example configuration, call `generate_image` with `{"prompt":"A watercolor mountain landscape"}` to use the default. To select a model explicitly:
 

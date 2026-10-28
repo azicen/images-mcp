@@ -15,28 +15,62 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type config struct{ baseURL, apiKey, outputDir string }
+type credentials struct{ baseURL, apiKey string }
+
+type config struct {
+	baseURL, apiKey, outputDir string
+	gemini, gptImage           credentials
+}
 
 func loadConfig() (config, error) {
-	c := config{baseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")), "/"), apiKey: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), outputDir: os.Getenv("IMAGE_OUTPUT_DIR")}
-	u, err := url.Parse(c.baseURL)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return c, fmt.Errorf("OPENAI_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment")
-	}
-	if c.apiKey == "" {
-		return c, fmt.Errorf("OPENAI_API_KEY is required")
-	}
-	if !strings.HasSuffix(c.baseURL, "/v1") {
-		c.baseURL += "/v1"
+	c := config{
+		baseURL: os.Getenv("OPENAI_BASE_URL"), apiKey: os.Getenv("OPENAI_API_KEY"),
+		gemini:    credentials{os.Getenv("GEMINI_BASE_URL"), os.Getenv("GEMINI_API_KEY")},
+		gptImage:  credentials{os.Getenv("GPT_IMAGE_BASE_URL"), os.Getenv("GPT_IMAGE_API_KEY")},
+		outputDir: os.Getenv("IMAGE_OUTPUT_DIR"),
 	}
 	if c.outputDir == "" {
 		c.outputDir = "images"
 	}
+	var err error
 	c.outputDir, err = filepath.Abs(c.outputDir)
 	if err != nil {
 		return c, fmt.Errorf("resolve output directory: %w", err)
 	}
 	return c, nil
+}
+
+func (c config) resolveCredentials(in generateInput) (credentials, error) {
+	family := credentials{}
+	switch {
+	case strings.HasPrefix(strings.ToLower(in.Model), "gemini"):
+		family = c.gemini
+	case strings.HasPrefix(strings.ToLower(in.Model), "gpt-image"):
+		family = c.gptImage
+	}
+	first := func(values ...string) string {
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+		return ""
+	}
+	resolved := credentials{
+		baseURL: strings.TrimRight(first(in.BaseURL, family.baseURL, c.baseURL), "/"),
+		apiKey:  first(in.APIKey, family.apiKey, c.apiKey),
+	}
+	u, err := url.Parse(resolved.baseURL)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(resolved.baseURL, "#") {
+		return credentials{}, fmt.Errorf("resolved base_url must be an HTTP(S) URL without credentials, query, or fragment")
+	}
+	if resolved.apiKey == "" || strings.ContainsAny(resolved.apiKey, " \t\r\n") || strings.IndexFunc(resolved.apiKey, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
+		return credentials{}, fmt.Errorf("resolved api_key must be a nonempty printable ASCII token without whitespace")
+	}
+	if !strings.HasSuffix(resolved.baseURL, "/v1") {
+		resolved.baseURL += "/v1"
+	}
+	return resolved, nil
 }
 
 func newServer(s *service) *mcp.Server {

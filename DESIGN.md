@@ -2,7 +2,7 @@
 
 ## Purpose and compatibility
 
-danqing is a stdio MCP server for image generation through a single OpenAI-compatible relay, such as NewAPI. It uses one OPENAI_BASE_URL and OPENAI_API_KEY for all supported models. Clients that assume native Gemini endpoints, separate provider credentials, or a single image-generation endpoint (as in standard mcp-image setups) cannot express this relay contract reliably. This is a compatibility constraint, not a claim that every mcp-image version has identical behavior.
+danqing is a stdio MCP server for image generation through OpenAI-compatible relays, such as NewAPI. OPENAI_BASE_URL and OPENAI_API_KEY provide defaults for all supported models, with family and request overrides. Clients that assume native Gemini endpoints, separate provider credentials, or a single image-generation endpoint (as in standard mcp-image setups) cannot express this relay contract reliably. This is a compatibility constraint, not a claim that every mcp-image version has identical behavior.
 
 ## Architecture and routing
 
@@ -22,6 +22,8 @@ Object properties (additional properties disallowed by SDK inference):
 | --- | --- | --- | --- |
 | prompt | string | yes | Nonempty generation/edit instructions |
 | model | string | yes | Gemini or GPT Image relay model name |
+| base_url | string | no | Per-request relay base URL override |
+| api_key | string | no | Per-request bearer credential override |
 | input_image | string | no | Local file path, HTTP(S) URL, image data URI, or raw base64 |
 | size | string | no | Relay-supported image size; GPT Image routes only |
 | quality | string | no | Relay-supported quality; GPT Image routes only |
@@ -34,8 +36,16 @@ Markdown destinations, image data URIs, standalone HTTP(S) URLs, raw base64, and
 
 ## Environment
 
-* OPENAI_BASE_URL: required HTTP(S) relay origin or API prefix; query strings, fragments, and embedded credentials rejected.
-* OPENAI_API_KEY: required relay bearer credential.
+Each field resolves independently, from highest to lowest priority:
+
+1. Nonempty generate_image arguments `base_url` and `api_key`.
+2. Model family environment variables (case-insensitive model prefix): `GEMINI_BASE_URL` / `GEMINI_API_KEY` for `gemini`, or `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY` for `gpt-image`.
+3. Default `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
+
+Missing, empty, or whitespace-only values fall through to the next level. Partial overrides replace only the supplied field: a family base URL alone uses the default API key, and a request API key alone uses the family or default base URL. Environment values are captured at startup; credentials are resolved and validated before each request, so defaults need not be configured when overrides supply both fields. Invalid nonempty resolved values fail rather than silently falling back.
+
+The resolved base URL must be a nonempty HTTP(S) URL without embedded credentials, query, or fragment; trailing slashes are removed and `/v1` is appended only when absent. The resolved API key must be a nonempty printable ASCII token without whitespace. Surrounding whitespace is trimmed. Validation errors never include credential values. Credentials are attached only to the generation/edit request header, never the payload, image downloads, saved metadata, or filenames.
+
 * IMAGE_OUTPUT_DIR: optional, defaults to ./images; resolved to an absolute directory and created as needed.
 
 Stdout is reserved for MCP; startup errors go to stderr. SIGINT/SIGTERM cancel the server.

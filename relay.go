@@ -15,6 +15,8 @@ import (
 )
 
 type generateInput struct {
+	BaseURL    string `json:"base_url,omitempty" jsonschema:"Optional relay base URL; overrides model family and OPENAI_BASE_URL defaults"`
+	APIKey     string `json:"api_key,omitempty" jsonschema:"Optional relay API key; overrides model family and OPENAI_API_KEY defaults"`
 	Prompt     string `json:"prompt" jsonschema:"Generation or editing instructions"`
 	Model      string `json:"model" jsonschema:"Gemini or GPT Image model name"`
 	InputImage string `json:"input_image,omitempty" jsonschema:"Optional local path, HTTP(S) URL, data URI, or raw base64 image"`
@@ -58,6 +60,10 @@ func route(in generateInput) (string, error) {
 
 func (s *service) request(ctx context.Context, in generateInput) (*http.Request, string, error) {
 	endpoint, err := route(in)
+	if err != nil {
+		return nil, "", err
+	}
+	resolved, err := s.config.resolveCredentials(in)
 	if err != nil {
 		return nil, "", err
 	}
@@ -116,12 +122,12 @@ func (s *service) request(ctx context.Context, in generateInput) (*http.Request,
 			return nil, "", fmt.Errorf("encode request: %w", err)
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.config.baseURL+endpoint, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resolved.baseURL+endpoint, &body)
 	if err != nil {
 		return nil, "", fmt.Errorf("create relay request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", "Bearer "+s.config.apiKey)
+	req.Header.Set("Authorization", "Bearer "+resolved.apiKey)
 	return req, endpoint, nil
 }
 

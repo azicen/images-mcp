@@ -261,27 +261,103 @@ func TestGenerate(t *testing.T) {
 	}
 }
 
-// TestConfig verifies required environment, prefix normalization, and absolute/default output directory.
+// TestConfig verifies startup snapshots and output paths, then exercises resolution.
+// Paths: absent/present family fields and absent/present request fields resolve independently;
+// valid credentials succeed, missing/invalid final URL or token fails without exposing values.
 func TestConfig(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "key")
-	t.Setenv("IMAGE_OUTPUT_DIR", "")
-	for _, base := range []string{"https://relay.example", "https://relay.example/v1/", "https://relay.example/prefix/v1"} {
-		t.Setenv("OPENAI_BASE_URL", base)
-		c, err := loadConfig()
-		if err != nil || !strings.HasSuffix(c.baseURL, "/v1") || !filepath.IsAbs(c.outputDir) {
-			t.Fatal(c, err)
+	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "GEMINI_BASE_URL", "GEMINI_API_KEY", "GPT_IMAGE_BASE_URL", "GPT_IMAGE_API_KEY", "IMAGE_OUTPUT_DIR"} {
+		t.Setenv(name, "")
+	}
+	tests := []struct {
+		name, model, familyURL, familyKey, requestURL, requestKey, wantURL, wantKey string
+	}{
+		{name: "default", model: "gemini-test", wantURL: "https://default.example/v1", wantKey: "default-key"},
+		{name: "gemini", model: "Gemini-test", familyURL: "https://family.example/prefix/", familyKey: "family-key", wantURL: "https://family.example/prefix/v1", wantKey: "family-key"},
+		{name: "gpt", model: "gpt-image-test", familyURL: "https://family.example/v1/", familyKey: "family-key", wantURL: "https://family.example/v1", wantKey: "family-key"},
+		{name: "request", model: "gpt-image", familyURL: "https://family.example", familyKey: "family-key", requestURL: "https://request.example", requestKey: "request-key", wantURL: "https://request.example/v1", wantKey: "request-key"},
+		{name: "family URL only", model: "gemini", familyURL: "https://family.example", wantURL: "https://family.example/v1", wantKey: "default-key"},
+		{name: "family key only", model: "gpt-image", familyKey: "family-key", wantURL: "https://default.example/v1", wantKey: "family-key"},
+		{name: "request URL only", model: "gemini", familyKey: "family-key", requestURL: "https://request.example", wantURL: "https://request.example/v1", wantKey: "family-key"},
+		{name: "request key only", model: "gpt-image", familyURL: "https://family.example", requestKey: "request-key", wantURL: "https://family.example/v1", wantKey: "request-key"},
+		{name: "blank overrides", model: "gemini", familyURL: "  ", familyKey: "  ", requestURL: "  ", requestKey: "  ", wantURL: "https://default.example/v1", wantKey: "default-key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OPENAI_BASE_URL", " https://default.example/ ")
+			t.Setenv("OPENAI_API_KEY", " default-key ")
+			prefix := "GEMINI"
+			if strings.HasPrefix(tt.model, "gpt-image") {
+				prefix = "GPT_IMAGE"
+			}
+			t.Setenv(prefix+"_BASE_URL", tt.familyURL)
+			t.Setenv(prefix+"_API_KEY", tt.familyKey)
+			c, err := loadConfig()
+			if err != nil || !filepath.IsAbs(c.outputDir) {
+				t.Fatal("load configuration failed")
+			}
+			req, _, err := (&service{config: c}).request(context.Background(), generateInput{Model: tt.model, Prompt: "draw", BaseURL: tt.requestURL, APIKey: tt.requestKey})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.URL.String() != tt.wantURL+map[bool]string{true: "/chat/completions", false: "/images/generations"}[strings.HasPrefix(strings.ToLower(tt.model), "gemini")] || req.Header.Get("Authorization") != "Bearer "+tt.wantKey {
+				t.Fatal("incorrect resolved credentials")
+			}
+		})
+	}
+	for _, base := range []string{"", "ftp://host", "https://user:pass@host", "https://host?q=1", "https://host#fragment", "https://host?", "https://host#", "://bad"} {
+		if _, err := (config{baseURL: base, apiKey: "key"}).resolveCredentials(generateInput{}); err == nil {
+			t.Errorf("accepted invalid base URL %q", base)
 		}
 	}
-	for _, base := range []string{"", "ftp://host", "https://user:pass@host", "https://host?q=1", "https://host#fragment"} {
-		t.Setenv("OPENAI_BASE_URL", base)
-		if _, err := loadConfig(); err == nil {
-			t.Errorf("accepted %q", base)
+	for _, key := range []string{"", "bad\nkey", "bad key", "bad\x7fkey"} {
+		if _, err := (config{baseURL: "https://host", apiKey: key}).resolveCredentials(generateInput{}); err == nil {
+			t.Fatal("accepted invalid API key")
 		}
 	}
-	t.Setenv("OPENAI_BASE_URL", "https://relay.example")
-	t.Setenv("OPENAI_API_KEY", "")
-	if _, err := loadConfig(); err == nil {
-		t.Fatal("accepted missing key")
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.resolveCredentials(generateInput{BaseURL: "https://request.example", APIKey: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []string{"gemini", "gpt-image"} {
+		familyOnly := config{gemini: credentials{baseURL: "https://family.example", apiKey: "key"}, gptImage: credentials{baseURL: "https://family.example", apiKey: "key"}}
+		if _, err := familyOnly.resolveCredentials(generateInput{Model: model}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := (config{baseURL: "https://host", apiKey: "key"}).resolveCredentials(generateInput{BaseURL: "invalid"}); err == nil {
+		t.Fatal("invalid override fell back")
+	}
+}
+
+// TestOverrideDownload checks the full generation/save path: request credentials go
+// only to the relay, including when the image is downloaded from the same origin.
+func TestOverrideDownload(t *testing.T) {
+	raw, _ := base64.StdEncoding.DecodeString(testPNG)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/image" {
+			if r.Header.Get("Authorization") != "" {
+				t.Error("download leaked credential")
+			}
+			_, _ = w.Write(raw)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer request-key" {
+			t.Error("incorrect relay credential")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"url": "http://" + r.Host + "/image"}}})
+	}))
+	defer server.Close()
+	s := &service{config: config{outputDir: t.TempDir()}, client: server.Client()}
+	out, err := s.generate(context.Background(), generateInput{Model: "gpt-image", Prompt: "draw", BaseURL: server.URL, APIKey: "request-key"})
+	if err != nil || len(out.Images) != 1 {
+		t.Fatalf("generation failed: %v", err)
+	}
+	encoded, _ := json.Marshal(out)
+	if strings.Contains(string(encoded), "request-key") {
+		t.Fatal("metadata leaked credential")
 	}
 }
 
@@ -291,7 +367,7 @@ func TestMCP(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"b64_json": testPNG}}})
 	}))
 	defer relay.Close()
-	s := &service{config: config{baseURL: relay.URL, outputDir: t.TempDir()}, client: relay.Client()}
+	s := &service{config: config{baseURL: relay.URL, apiKey: "key", outputDir: t.TempDir()}, client: relay.Client()}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a, b := mcp.NewInMemoryTransports()

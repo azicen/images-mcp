@@ -826,14 +826,14 @@ func TestModelDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []modelRecord{
-		{ID: "alpha", API: "images", Description: "First model", Notes: c.file.Models["alpha"].Notes, SupportsEdit: true, IsDefault: true},
-		{ID: "gemini-middle", API: "chat", Description: "Chat model", SupportsEdit: true},
-		{ID: "gpt-image-zeta", API: "images", Description: "Last model", SupportsEdit: true},
+		{ID: "alpha", Description: "First model", Notes: c.file.Models["alpha"].Notes, SupportsEdit: true, IsDefault: true},
+		{ID: "gemini-middle", Description: "Chat model", SupportsEdit: true},
+		{ID: "gpt-image-zeta", Description: "Last model", SupportsEdit: true},
 	}
 	if !reflect.DeepEqual(records, want) {
 		t.Fatalf("records = %+v", records)
 	}
-	if strings.Count(content, `"notes"`) != 1 || strings.Contains(content, "secret-key") {
+	if strings.Count(content, `"notes"`) != 1 || strings.Contains(content, "secret-key") || strings.Contains(content, `"api"`) || strings.Contains(content, `"api_type"`) {
 		t.Fatalf("unexpected fields: %s", content)
 	}
 	for _, args := range []map[string]any{{"prompt": "draw"}, {"prompt": "draw", "model": ""}, {"prompt": "draw", "model": "gpt-image-zeta"}} {

@@ -174,7 +174,6 @@ Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 
 使用 `{}` 调用，发现配置模型并获取详细指南。返回按 ID 排序的 JSON 数组，每条包含：
 
 - `id`：精确模型 ID。
-- `api`：规范化路由，`chat` 或 `images`。
 - `description`：简短说明。
 - `notes`：可选详细指南。
 - `supports_edit`：是否支持编辑，两条路由均为 `true`。

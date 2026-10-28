@@ -200,7 +200,6 @@ func (c config) resolveCredentials(in generateInput) (credentials, error) {
 
 type modelRecord struct {
 	ID           string `json:"id"`
-	API          string `json:"api"`
 	Description  string `json:"description"`
 	Notes        string `json:"notes,omitempty"`
 	SupportsEdit bool   `json:"supports_edit"`
@@ -224,13 +223,10 @@ func (c config) listModels() ([]modelRecord, error) {
 		if err != nil {
 			return nil, err
 		}
-		api := "chat"
-		if family == "gpt-image" {
-			api = "images"
-		} else if family != "gemini" {
+		if family != "gpt-image" && family != "gemini" {
 			return nil, fmt.Errorf("model %q: configure api or api_type", id)
 		}
-		records = append(records, modelRecord{ID: id, API: api, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
+		records = append(records, modelRecord{ID: id, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
 	}
 	return records, nil
 }
@@ -260,7 +256,7 @@ func newServer(s *service) *mcp.Server {
 		out, err := s.generate(ctx, in)
 		return &mcp.CallToolResult{}, out, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their API routes, capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		records, err := s.config.listModels()
 		if err != nil {
 			return nil, nil, err

@@ -39,12 +39,11 @@ One request returns every image supplied by the relay. Results contain JSON text
 
 At registration, the `generate_image` tool description includes the current default model (or explicitly indicates none), configured model IDs with their short descriptions sorted alphabetically, and guidance to call `list_models` for complete details and guidelines. Detailed notes are excluded from this summary. Ordering is deterministic for prompt caching. Unknown models that cannot be routed return an error listing configured IDs in alphabetical order; explicit API and prefix routing still allow unlisted models.
 
-`list_models` has description: “List available image generation models, their API routes, capabilities, and guidelines.” Its input is an empty object with no required arguments. It returns JSON text containing a list sorted alphabetically by exact model ID, or `[]` when no models are configured. Each record contains:
+`list_models` has description: “List available image generation models, their capabilities, and guidelines.” Its input is an empty object with no required arguments. It returns JSON text containing a list sorted alphabetically by exact model ID, or `[]` when no models are configured. Each record contains:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | id | string | Exact configured model name |
-| api | string | `chat` or `images`, derived from configured API aliases or model prefix |
 | description | string | Short configured summary, empty if absent |
 | notes | string | Detailed guidelines; omitted if empty |
 | supports_edit | boolean | True for both supported routes |

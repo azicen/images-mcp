@@ -174,7 +174,6 @@ Successful results return `model`, `route`, and `images` in both JSON text and s
 Call with `{}` to discover configured models and retrieve detailed guidance. Returns a JSON array sorted by ID, with each entry containing:
 
 - `id`: exact model ID.
-- `api`: normalized route, `chat` or `images`.
 - `description`: short summary.
 - `notes`: optional detailed guidance.
 - `supports_edit`: editing support; `true` for both routes.

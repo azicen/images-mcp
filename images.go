@@ -16,7 +16,37 @@ import (
 	"time"
 )
 
-const maxImageBytes = 32 << 20
+const (
+	maxImageBytes      = 32 << 20
+	maxTotalInputBytes = 64 << 20
+)
+
+type inputImageSource struct{ ref, source string }
+type inputImage struct {
+	data     []byte
+	mimeType string
+}
+
+func (s *service) loadInputImages(ctx context.Context, in generateInput) ([]inputImage, error) {
+	sources, err := in.normalizedInputImages()
+	if err != nil {
+		return nil, err
+	}
+	var images []inputImage
+	total := 0
+	for _, source := range sources {
+		b, mimeType, err := s.loadImage(ctx, source.ref, true)
+		if err != nil {
+			return nil, fmt.Errorf("load %s: %w", source.source, err)
+		}
+		total += len(b)
+		if total > maxTotalInputBytes {
+			return nil, fmt.Errorf("load %s: total input images exceed %d bytes (64 MiB)", source.source, maxTotalInputBytes)
+		}
+		images = append(images, inputImage{data: b, mimeType: mimeType})
+	}
+	return images, nil
+}
 
 var (
 	markdownImage = regexp.MustCompile(`!\[[^\]]*\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+"[^"]*")?\s*\)`)
@@ -204,6 +234,9 @@ func (s *service) loadImage(ctx context.Context, ref string, allowFile bool) ([]
 		return nil, "", err
 	}
 	mimeType := http.DetectContentType(b)
+	if allowFile && mimeType != "image/png" && mimeType != "image/jpeg" && mimeType != "image/webp" {
+		return nil, "", fmt.Errorf("unsupported input image MIME %q (expected PNG, JPEG, or WebP)", mimeType)
+	}
 	if imageExtension(mimeType) == "" {
 		return nil, "", fmt.Errorf("unsupported image data (expected PNG, JPEG, GIF, or WebP)")
 	}

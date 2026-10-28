@@ -74,13 +74,13 @@ models:
     api: chat
     description: Image generation and editing through Gemini chat completions.
     notes: |
-      Supply input_image for editing.
+      Supply input_images for editing: primary first, then style/context references.
       This route does not accept size or quality.
   custom-image-model:
     api: images
     description: A custom image model using the Images API.
     notes: |
-      Supply input_image to use the multipart image edits endpoint.
+      Supply input_images (or legacy input_image) to use the multipart image edits endpoint.
       Supported size and quality values depend on the relay.
     base_url: https://custom-relay.example/v1
     api_key: your-model-api-key
@@ -115,15 +115,15 @@ Route selection priority is: request `api` / `api_type` > exact model configurat
 
 | Model family | API values | Endpoint | Behavior |
 | --- | --- | --- | --- |
-| Gemini | `chat`, `gemini` | `/v1/chat/completions` | Text-to-image generation; supplying `input_image` automatically builds a multimodal message containing text and an image data URI for image-to-image editing. |
-| GPT Image | `images`, `gpt`, `gpt-image` | `/v1/images/generations` | Sends a JSON generation request when `input_image` is absent. |
-| GPT Image | Same as above | `/v1/images/edits` | Automatically sends a multipart image editing request when `input_image` is supplied. |
+| Gemini | `chat`, `gemini` | `/v1/chat/completions` | Text-to-image generation; supplying nonempty `input_image` or `input_images` automatically builds a multimodal message containing text and an image data URI for image-to-image editing. |
+| GPT Image | `images`, `gpt`, `gpt-image` | `/v1/images/generations` | Sends a JSON generation request when no nonempty input images are supplied. |
+| GPT Image | Same as above | `/v1/images/edits` | Automatically sends a multipart image editing request when nonempty `input_image` or `input_images` are supplied. |
 
 Without explicit API selection, the `gemini` and `gpt-image` prefixes select their respective families. Unlisted models can also be used through a recognized prefix or explicit API selection. If `base_url` does not end in `/v1`, the server appends it.
 
 The Gemini route extracts images from chat response text (Markdown images, URLs, data URIs, or raw base64), content arrays, and `message.images`. The Images route reads `data[].b64_json` or `data[].url`. The server automatically downloads or decodes the results and saves them to the output directory.
 
-Both routes accept local paths, HTTP(S) URLs, image data URIs, and raw base64 as `input_image`. Supported formats are PNG, JPEG, GIF, and WebP, with a 32 MiB limit per image and up to 16 extracted images per response. `size` and `quality` apply only to the Images route, with accepted values determined by your relay. Passing either parameter to the Chat route returns an error.
+Both routes accept local paths, HTTP(S) URLs, image Data URIs, and raw base64 through `input_images` or legacy `input_image`. Inputs allow PNG, JPEG, and WebP only (GIF/SVG are rejected), up to 32 MiB each, 64 MiB total, and 16 images per request. Saved outputs allow PNG, JPEG, WebP, and GIF, with up to 16 extracted images per response. `size` and `quality` apply only to the Images route, with accepted values determined by your relay. Passing either parameter to the Chat route returns an error.
 
 ## Credential resolution priority
 
@@ -148,7 +148,8 @@ Generates or edits images through a unified interface. The SDK automatically der
 | --- | --- |
 | `prompt` | Required, nonblank generation or editing instructions. |
 | `model` | Optional; omitted or empty values use `default_model`. |
-| `input_image` | Optional; supplying it selects image editing. |
+| `input_image` | Optional backward-compatible single image; prepended to `input_images` when nonempty. |
+| `input_images` | Optional ordered image array; blank entries are ignored. First combined image is primary; remaining images are style/context references. |
 | `api` / `api_type` | Optional protocol route override for the model configuration. |
 | `base_url` / `api_key` | Optional credential overrides for this request. |
 | `size` / `quality` | Optional; supported only on the Images route. |
@@ -205,3 +206,16 @@ Environment variables can supplement a configuration file or be used on their ow
 ```
 
 Set family variables as needed; omitted family credentials fall back to global credentials. Without a configuration file, `list_models` returns an empty array, and the default model, model summaries, and detailed notes are unavailable. Supply `model` explicitly on every call; custom model names also require `api` or `api_type`.
+
+
+### Multi-image references and image-to-image editing
+
+```json
+{"model":"gpt-image-2.5-flare","prompt":"Keep the subject in image 1, use the palette of image 2 and the setting of image 3","input_images":["/absolute/path/to/primary.png","https://example.com/style.webp","data:image/jpeg;base64,..."]}
+```
+
+Gemini models accept the same arguments. You can combine both parameters: nonblank `input_image` comes first, followed by nonblank `input_images` entries in order, without deduplication. The first combined image is the primary image to edit; subsequent images provide style/context references. Describe their intended roles in the prompt; the model determines the final result.
+
+With inputs, GPT Image uses `/v1/images/edits`: one file uses `image`; multiple files each use `image[]`, with individual filenames and MIME headers. Gemini uses `/v1/chat/completions` with a user content array containing the text part first, then ordered `image_url` parts encoded as base64 Data URIs. With no nonblank input, text-to-image behavior applies.
+
+More than 16 inputs fail before any image download or generation request. Exceeding the cumulative 64 MiB budget stops loading immediately. Loading and budget errors identify the original argument, such as `input_image` or `input_images[2]` (zero-based array indices).

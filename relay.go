@@ -14,17 +14,6 @@ import (
 	"strings"
 )
 
-type generateInput struct {
-	API        string `json:"api,omitempty" jsonschema:"Optional API route: gemini or chat; gpt, gpt-image or images; overrides model configuration"`
-	APIType    string `json:"api_type,omitempty" jsonschema:"Alias for api"`
-	BaseURL    string `json:"base_url,omitempty" jsonschema:"Optional relay base URL; overrides model family and OPENAI_BASE_URL defaults"`
-	APIKey     string `json:"api_key,omitempty" jsonschema:"Optional relay API key; overrides model family and OPENAI_API_KEY defaults"`
-	Prompt     string `json:"prompt" jsonschema:"Generation or editing instructions"`
-	Model      string `json:"model,omitempty" jsonschema:"Optional relay model name; defaults to configured default_model. See tool description and list_models for available models."`
-	InputImage string `json:"input_image,omitempty" jsonschema:"Optional local path, HTTP(S) URL, data URI, or raw base64 image"`
-	Size       string `json:"size,omitempty" jsonschema:"Optional GPT Image size"`
-	Quality    string `json:"quality,omitempty" jsonschema:"Optional GPT Image quality"`
-}
 type imageMetadata struct {
 	Path     string `json:"path"`
 	MIMEType string `json:"mime_type"`
@@ -92,6 +81,10 @@ func (c config) route(in generateInput) (string, error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return "", fmt.Errorf("prompt is required")
 	}
+	sources, err := in.normalizedInputImages()
+	if err != nil {
+		return "", err
+	}
 	family, err := c.modelFamily(in)
 	if err != nil {
 		return "", err
@@ -103,7 +96,7 @@ func (c config) route(in generateInput) (string, error) {
 		}
 		return "/chat/completions", nil
 	case "gpt-image":
-		if in.InputImage != "" {
+		if len(sources) > 0 {
 			return "/images/edits", nil
 		}
 		return "/images/generations", nil
@@ -135,13 +128,13 @@ func (s *service) request(ctx context.Context, in generateInput) (*http.Request,
 	if err != nil {
 		return nil, "", err
 	}
+	images, err := s.loadInputImages(ctx, in)
+	if err != nil {
+		return nil, "", err
+	}
 	var body bytes.Buffer
 	contentType := "application/json"
 	if endpoint == "/images/edits" {
-		img, mimeType, err := s.loadImage(ctx, in.InputImage, true)
-		if err != nil {
-			return nil, "", fmt.Errorf("load input image: %w", err)
-		}
 		writer := multipart.NewWriter(&body)
 		for _, field := range []struct{ name, value string }{{"model", in.Model}, {"prompt", in.Prompt}, {"size", in.Size}, {"quality", in.Quality}} {
 			if field.value != "" {
@@ -150,15 +143,21 @@ func (s *service) request(ctx context.Context, in generateInput) (*http.Request,
 				}
 			}
 		}
-		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="input%s"`, imageExtension(mimeType)))
-		header.Set("Content-Type", mimeType)
-		part, err := writer.CreatePart(header)
-		if err != nil {
-			return nil, "", err
+		fieldName := "image"
+		if len(images) > 1 {
+			fieldName = "image[]"
 		}
-		if _, err := part.Write(img); err != nil {
-			return nil, "", err
+		for i, img := range images {
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="input%d%s"`, fieldName, i, imageExtension(img.mimeType)))
+			header.Set("Content-Type", img.mimeType)
+			part, err := writer.CreatePart(header)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, err := part.Write(img.data); err != nil {
+				return nil, "", err
+			}
 		}
 		if err := writer.Close(); err != nil {
 			return nil, "", err
@@ -168,12 +167,12 @@ func (s *service) request(ctx context.Context, in generateInput) (*http.Request,
 		payload := map[string]any{"model": in.Model}
 		if endpoint == "/chat/completions" {
 			var content any = in.Prompt
-			if in.InputImage != "" {
-				img, mimeType, err := s.loadImage(ctx, in.InputImage, true)
-				if err != nil {
-					return nil, "", fmt.Errorf("load input image: %w", err)
+			if len(images) > 0 {
+				parts := []any{map[string]any{"type": "text", "text": in.Prompt}}
+				for _, img := range images {
+					parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:" + img.mimeType + ";base64," + base64.StdEncoding.EncodeToString(img.data)}})
 				}
-				content = []any{map[string]any{"type": "text", "text": in.Prompt}, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(img)}}}
+				content = parts
 			}
 			payload["messages"] = []any{map[string]any{"role": "user", "content": content}}
 			payload["stream"] = false

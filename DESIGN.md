@@ -9,7 +9,7 @@ images-mcp is a stdio MCP server for image generation through OpenAI-compatible 
 The official github.com/modelcontextprotocol/go-sdk v1.8.0 registers generate_image and list_models with mcp.AddTool and runs with mcp.StdioTransport. Configuration, request construction, response extraction, and image storage remain small, independently testable components in package main.
 
 * Route A: explicit `api` / `api_type` values `gemini` or `chat`, or model names beginning with gemini when unspecified (for example gemini-3.1-flash-image) use POST /v1/chat/completions with an OpenAI user message. Text-only requests use string content; editing requests use text and image_url content parts. Responses may contain Markdown images, data URIs, raw base64, or structured image_url parts.
-* Route B: explicit `api` / `api_type` values `gpt`, `gpt-image`, or `images`, or model names beginning with gpt-image when unspecified (including gpt-image-2.5, gpt-image-2.5-flare, and gpt-image-2.5-sunburst) use POST /v1/images/generations for text-to-image and POST /v1/images/edits with multipart/form-data and an image file part when input_image is provided. Image responses accept data[].url and data[].b64_json.
+* Route B: explicit `api` / `api_type` values `gpt`, `gpt-image`, or `images`, or model names beginning with gpt-image when unspecified (including gpt-image-2.5, gpt-image-2.5-flare, and gpt-image-2.5-sunburst) use POST /v1/images/generations for text-to-image and POST /v1/images/edits with multipart/form-data and one or more image file parts when normalized inputs are nonempty. Image responses accept data[].url and data[].b64_json.
 
 API values are case-insensitive. Nonempty tool API arguments override the exact model configuration entry, and explicit selection overrides model prefixes. Empty strings mean unspecified. Invalid API values and aliases selecting different routes fail clearly; invalid model API configuration fails startup. Equivalent aliases may be supplied together.
 
@@ -29,7 +29,8 @@ Object properties (additional properties disallowed by SDK inference):
 | api_type | string | no | Alias for api |
 | base_url | string | no | Per-request relay base URL override |
 | api_key | string | no | Per-request bearer credential override |
-| input_image | string | no | Local file path, HTTP(S) URL, image data URI, or raw base64 |
+| input_image | string | no | Backward-compatible single image; prepended to input_images |
+| input_images | array of strings | no | Ordered paths, HTTP(S) URLs, Data URIs, or raw base64; first combined image is primary, others are style/context references |
 | size | string | no | Relay-supported image size; GPT Image routes only |
 | quality | string | no | Relay-supported quality; GPT Image routes only |
 
@@ -53,7 +54,7 @@ Discovery only lists exact `models` entries, never credentials or family/default
 
 ## Parsing and storage
 
-Markdown destinations, image data URIs, standalone HTTP(S) URLs, raw base64, and structured chat image parts feed the same loader. Downloads and local files are limited to 32 MiB; JSON responses to 64 MiB; at most 16 images per response. Base64 accepts padded/unpadded standard and URL-safe encodings. MIME type is detected from bytes, restricted to PNG/JPEG/GIF/WebP; misleading extensions or data URI labels do not control output types. Files use UTC timestamps and cryptographically random suffixes, exclusive creation, and owner-only permissions. Failed multi-image calls remove files already created by that call.
+Markdown destinations, image data URIs, standalone HTTP(S) URLs, raw base64, and structured chat image parts feed the same loader. Downloads and local files are limited to 32 MiB; JSON responses to 64 MiB; at most 16 images per response. Base64 accepts padded/unpadded standard and URL-safe encodings. MIME type is detected from bytes: input accepts only PNG/JPEG/WebP; saved output accepts PNG/JPEG/GIF/WebP; misleading extensions or data URI labels do not control output types. Files use UTC timestamps and cryptographically random suffixes, exclusive creation, and owner-only permissions. Failed multi-image calls remove files already created by that call.
 
 ## Configuration
 
@@ -88,3 +89,13 @@ Stdout is reserved for MCP; startup errors go to stderr. SIGINT/SIGTERM cancel t
 ## Scope and limitations
 
 Model availability and optional size/quality values are relay-specific. The named models are routing examples, not a guarantee of provider availability. This implementation does not use native Gemini protocols, stream responses, or retry generation. Live relay testing requires credentials and remains separate from deterministic unit tests.
+
+## Multi-image input normalization and assembly
+
+`generateInput` lives in main.go. `normalizedInputImages` prepends nonblank legacy `input_image`, then appends nonblank `input_images` entries without deduplication, preserving original argument indices for errors. More than 16 combined images fail before network I/O. No inputs selects text-to-image; any inputs select editing. The first is the primary image to edit; subsequent images are style/context references, with model behavior guided by the prompt.
+
+The shared input loader in images.go enforces 32 MiB per image and `maxTotalInputBytes = 64 << 20` decoded bytes per request. Loading stops at the first error or cumulative overflow, before loading subsequent references or sending a generation request. Error context identifies `input_image` or the original zero-based `input_images[i]`; base64 contents are not echoed. Input GIF/SVG are rejected regardless of extensions or Data URI labels; output GIF remains supported.
+
+In relay.go, GPT Image sends multipart POST /v1/images/edits: one input uses `name="image"`; multiple inputs all use `name="image[]"`. Each file part has a generated filename with detected extension and its own Content-Type. Gemini sends POST /v1/chat/completions: user content starts with the prompt text part, followed by ordered image_url parts using detected MIME and standard base64 Data URIs.
+
+Tests cover legacy and array single-image fields, repeated multi-image fields and bytes, mixed parameters, ordered Gemini parts, count limits, rejected MIME, indexed errors, exact aggregate budget and overflow, and output GIF preservation. Run `go test -race -cover ./...`, `go vet ./...`, and `go build -o bin/images-mcp .`.

@@ -794,7 +794,7 @@ func TestModelDiscovery(t *testing.T) {
 	if generation == nil {
 		t.Fatal("generate_image missing")
 	}
-	wantDescription := "Generate or edit images through a unified relay and save them locally.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
+	wantDescription := "Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Legacy input_image is prepended. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
 	if generation.Description != wantDescription {
 		t.Fatalf("description = %q", generation.Description)
 	}
@@ -900,5 +900,167 @@ func TestModelMetadataConfig(t *testing.T) {
 				t.Fatalf("unroutable config error = %v", err)
 			}
 		})
+	}
+}
+
+// TestMultiImagePayloads covers legacy-only, array-only, and combined inputs.
+// Branches: one image -> image; multiple -> image[]; chat -> ordered text/images.
+// Distinct image bytes verify ordering, duplicates remain meaningful references.
+func TestMultiImagePayloads(t *testing.T) {
+	raw, _ := base64.StdEncoding.DecodeString(testPNG)
+	second := append(append([]byte(nil), raw...), 1)
+	refs := []string{testPNG, base64.StdEncoding.EncodeToString(second)}
+	for _, model := range []string{"gpt-image-test", "gemini-test"} {
+		for _, mode := range []string{"legacy", "single-array", "multi", "combined"} {
+			t.Run(model+"/"+mode, func(t *testing.T) {
+				in := generateInput{Model: model, Prompt: "edit"}
+				want := [][]byte{raw}
+				switch mode {
+				case "legacy":
+					in.InputImage = refs[0]
+				case "single-array":
+					in.InputImages = refs[:1]
+				case "multi":
+					in.InputImages = []string{"", refs[0], " ", refs[1]}
+					want = append(want, second)
+				case "combined":
+					in.InputImage = refs[0]
+					in.InputImages = refs[1:]
+					want = append(want, second)
+				}
+				s := &service{config: config{baseURL: "https://relay.example", apiKey: "key"}, client: http.DefaultClient}
+				req, endpoint, err := s.request(context.Background(), in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer req.Body.Close()
+				if strings.HasPrefix(model, "gpt") {
+					if endpoint != "/images/edits" {
+						t.Fatal(endpoint)
+					}
+					if err := req.ParseMultipartForm(1 << 20); err != nil {
+						t.Fatal(err)
+					}
+					defer req.MultipartForm.RemoveAll()
+					field := "image"
+					if len(want) > 1 {
+						field = "image[]"
+					}
+					files := req.MultipartForm.File[field]
+					if len(files) != len(want) || len(req.MultipartForm.File) != 1 {
+						t.Fatalf("files = %+v", req.MultipartForm.File)
+					}
+					for i, h := range files {
+						f, err := h.Open()
+						if err != nil {
+							t.Fatal(err)
+						}
+						got, err := readLimited(f, maxImageBytes)
+						f.Close()
+						if err != nil || !bytes.Equal(got, want[i]) || h.Filename == "" || h.Header.Get("Content-Type") != "image/png" {
+							t.Fatalf("part %d: %v", i, err)
+						}
+					}
+				} else {
+					var payload struct {
+						Messages []struct {
+							Role    string `json:"role"`
+							Content []struct {
+								Type     string `json:"type"`
+								Text     string `json:"text"`
+								ImageURL struct {
+									URL string `json:"url"`
+								} `json:"image_url"`
+							} `json:"content"`
+						} `json:"messages"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					if endpoint != "/chat/completions" || len(payload.Messages) != 1 {
+						t.Fatal(payload)
+					}
+					msg := payload.Messages[0]
+					if msg.Role != "user" || len(msg.Content) != len(want)+1 || msg.Content[0].Type != "text" || msg.Content[0].Text != in.Prompt {
+						t.Fatal(msg)
+					}
+					for i, b := range want {
+						part := msg.Content[i+1]
+						if part.Type != "image_url" || part.ImageURL.URL != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(b) {
+							t.Fatalf("part %d: %+v", i, part)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestInputImageValidation covers normalization order/empty filtering, 16/17 count
+// boundaries, forbidden MIME types, original error indices, and output GIF support.
+// Count errors must precede all network I/O, including reference downloads.
+func TestInputImageValidation(t *testing.T) {
+	s := &service{config: config{baseURL: "https://relay.example", apiKey: "key", outputDir: t.TempDir()}, client: http.DefaultClient}
+	in := generateInput{InputImage: "primary", InputImages: []string{"", "second", " "}}
+	sources, err := in.normalizedInputImages()
+	if err != nil || !reflect.DeepEqual(sources, []inputImageSource{{ref: "primary", source: "input_image"}, {ref: "second", source: "input_images[1]"}}) {
+		t.Fatal(sources, err)
+	}
+	in = generateInput{Model: "gpt-image", Prompt: "edit", InputImages: make([]string, 16)}
+	for i := range in.InputImages {
+		in.InputImages[i] = "https://must-not-be-fetched.invalid/image"
+	}
+	if _, err := in.normalizedInputImages(); err != nil {
+		t.Fatal(err)
+	}
+	in.InputImage = testPNG
+	if _, _, err := s.request(context.Background(), in); err == nil || !strings.Contains(err.Error(), "16") {
+		t.Fatal(err)
+	}
+	gif := base64.StdEncoding.EncodeToString([]byte("GIF89a" + strings.Repeat("\x00", 20)))
+	for _, ref := range []string{gif, "data:image/png;base64," + gif, base64.StdEncoding.EncodeToString([]byte("<svg></svg>")), "/missing/reference.png"} {
+		in = generateInput{Model: "gemini", Prompt: "edit", InputImages: []string{testPNG, "", ref}}
+		if _, _, err := s.request(context.Background(), in); err == nil || !strings.Contains(err.Error(), "input_images[2]") {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.request(context.Background(), generateInput{Model: "gpt-image", Prompt: "edit", InputImage: gif}); err == nil || !strings.Contains(err.Error(), "input_image:") {
+		t.Fatal(err)
+	}
+	if out, err := s.saveImage(context.Background(), gif); err != nil || out.MIMEType != "image/gif" {
+		t.Fatal(out, err)
+	}
+}
+
+// TestInputImageBudget covers exact 64 MiB acceptance and overflow at the third
+// reference; both routes reject overflow before issuing a generation request.
+// Each individual file is valid PNG input within the unchanged 32 MiB limit.
+func TestInputImageBudget(t *testing.T) {
+	raw, _ := base64.StdEncoding.DecodeString(testPNG)
+	path := filepath.Join(t.TempDir(), "large.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxImageBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := &service{config: config{baseURL: "https://relay.example", apiKey: "key"}, client: http.DefaultClient}
+	images, err := s.loadInputImages(context.Background(), generateInput{InputImages: []string{path, path}})
+	if err != nil || len(images) != 2 {
+		t.Fatal(len(images), err)
+	}
+	images = nil
+	for _, model := range []string{"gpt-image", "gemini"} {
+		_, _, err := s.request(context.Background(), generateInput{Model: model, Prompt: "edit", InputImages: []string{path, path, testPNG, "/must-not-be-loaded"}})
+		if err == nil || !strings.Contains(err.Error(), "input_images[2]") || !strings.Contains(err.Error(), "64 MiB") {
+			t.Fatal(err)
+		}
 	}
 }

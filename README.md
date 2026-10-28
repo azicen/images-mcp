@@ -74,13 +74,13 @@ models:
     api: chat
     description: 通过 Gemini 聊天接口生成和编辑图像。
     notes: |
-      编辑时传入 input_image。
+      编辑时传入 input_images；第一张为主图，后续为风格/上下文参考图。
       此路由不接受 size 或 quality。
   custom-image-model:
     api: images
     description: 使用 Images API 的自定义图像模型。
     notes: |
-      传入 input_image 时使用 multipart 图像编辑接口。
+      传入 input_images（兼容 input_image）时使用 multipart 图像编辑接口。
       size 和 quality 的可用值取决于中转服务。
     base_url: https://custom-relay.example/v1
     api_key: your-model-api-key
@@ -115,15 +115,15 @@ families:
 
 | 模型家族 | API 值 | 端点 | 行为 |
 | --- | --- | --- | --- |
-| Gemini | `chat`、`gemini` | `/v1/chat/completions` | 文生图；提供 `input_image` 时自动构造含文本和图像 data URI 的多模态消息，实现图生图。 |
-| GPT Image | `images`、`gpt`、`gpt-image` | `/v1/images/generations` | 未提供 `input_image` 时发送 JSON 生成请求。 |
-| GPT Image | 同上 | `/v1/images/edits` | 提供 `input_image` 时自动发送 multipart 图像编辑请求。 |
+| Gemini | `chat`、`gemini` | `/v1/chat/completions` | 文生图；提供非空 `input_image` 或 `input_images` 时自动构造含文本和图像 data URI 的多模态消息，实现图生图。 |
+| GPT Image | `images`、`gpt`、`gpt-image` | `/v1/images/generations` | 未提供非空 `input_image` 或 `input_images` 时发送 JSON 生成请求。 |
+| GPT Image | 同上 | `/v1/images/edits` | 提供非空 `input_image` 或 `input_images` 时自动发送 multipart 图像编辑请求。 |
 
 未显式指定路由时，`gemini` 和 `gpt-image` 前缀分别选择对应家族。未列入配置的模型也可通过前缀或显式 API 使用。`base_url` 末尾没有 `/v1` 时会自动补充。
 
 Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 base64）、内容数组及 `message.images` 中提取图像；Images 路由解析 `data[].b64_json` 或 `data[].url`。服务自动下载或解码结果并保存到输出目录。
 
-两种路由的 `input_image` 均支持本地路径、HTTP(S) URL、图像 data URI 和原始 base64。支持 PNG、JPEG、GIF、WebP，单张图像上限为 32 MiB，每次响应最多提取 16 张图像。`size` 和 `quality` 仅适用于 Images 路由，可用值由中转服务决定；Chat 路由传入这两个参数会返回错误。
+两种路由的 `input_images` 和兼容参数 `input_image` 均支持本地路径、HTTP(S) URL、图像 Data URI 和原始 base64。输入只允许 PNG、JPEG、WebP，拒绝 GIF/SVG；每张最多 32 MiB，每次请求合计最多 64 MiB、16 张。输出保存支持 PNG、JPEG、WebP、GIF，每次响应最多提取 16 张图像。`size` 和 `quality` 仅适用于 Images 路由，可用值由中转服务决定；Chat 路由传入这两个参数会返回错误。
 
 ## 凭据解析优先级
 
@@ -148,7 +148,8 @@ Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 
 | --- | --- |
 | `prompt` | 必填，非空的生成或编辑指令。 |
 | `model` | 可选，省略或为空时使用 `default_model`。 |
-| `input_image` | 可选，提供时执行图像编辑。 |
+| `input_image` | 可选，向下兼容的单图参数；非空时放在 `input_images` 前面。 |
+| `input_images` | 可选，有序参考图数组；忽略空白项，合并后第一张为主图，后续为风格/上下文参考图。 |
 | `api` / `api_type` | 可选，覆盖模型配置的协议路由。 |
 | `base_url` / `api_key` | 可选，覆盖本次请求的凭据。 |
 | `size` / `quality` | 可选，仅 Images 路由支持。 |
@@ -205,3 +206,16 @@ Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 
 ```
 
 按需设置家族变量；不设置时会使用全局凭据。没有配置文件时，`list_models` 返回空数组，默认模型、模型简介和详细指南不可用。每次调用需显式传入 `model`；自定义模型名称还需传入 `api` 或 `api_type`。
+
+
+### 多参考图与图生图
+
+```json
+{"model":"gpt-image-2.5-flare","prompt":"保留第一张图的主体，采用第二张的配色和第三张的场景","input_images":["/absolute/path/to/primary.png","https://example.com/style.webp","data:image/jpeg;base64,..."]}
+```
+
+Gemini 模型使用相同参数。`input_image` 与 `input_images` 可同时使用：先加入非空的 `input_image`，再按顺序追加 `input_images` 的非空项，不去重。合并后的第 1 张是待编辑主图，后续为参考图；提示词可进一步说明各图用途。这是传参约定，最终效果由模型决定。
+
+GPT Image 有输入图时调用 `/v1/images/edits`：单图文件字段为 `image`，多图每个文件字段均为 `image[]`，各自带文件名和 MIME 类型。Gemini 调用 `/v1/chat/completions`，user content 先放 text，再按顺序放各图的 `image_url` Data URI。没有非空输入图时使用文生图流程。
+
+超过 16 张会在任何图片下载或生成请求前报错；累计输入超过 64 MiB 时立即停止，不加载后续图片。加载和预算错误标明原参数来源（如 `input_image`、`input_images[2]`，数组索引从 0 开始）。

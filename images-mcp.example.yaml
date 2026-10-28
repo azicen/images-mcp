@@ -21,14 +21,18 @@ models:
     api: chat
     description: Image generation and editing through Gemini chat completions.
     notes: |
-      Supply input_image to edit an existing image.
+      Supply input_images to edit: first is primary, later images are style/context references.
+      Legacy input_image is prepended; blank entries are ignored.
+      Up to 16 PNG/JPEG/WebP inputs, 32 MiB each and 64 MiB total.
       The chat route does not accept size or quality arguments.
 
   gpt-image-2.5-flare:
     api: images
     description: Image generation and editing through the Images API.
     notes: |
-      Supply input_image to use the multipart image edits endpoint.
+      Supply input_images (or legacy input_image) for multipart image edits.
+      First combined image is primary; remaining images are style/context references.
+      Up to 16 PNG/JPEG/WebP inputs, 32 MiB each and 64 MiB total.
       Use size and quality only with values supported by your relay.
 
   custom-nano-draw:

@@ -23,6 +23,8 @@ import (
 type credentials struct{ baseURL, apiKey string }
 
 type fileCredentials struct {
+	API     string `json:"api,omitempty" yaml:"api,omitempty"`
+	APIType string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
 	BaseURL string `json:"base_url" yaml:"base_url"`
 	APIKey  string `json:"api_key" yaml:"api_key"`
 }
@@ -120,6 +122,11 @@ func loadConfig(paths ...string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	for name, model := range file.Models {
+		if _, err := explicitFamily(model.API, model.APIType); err != nil {
+			return config{}, fmt.Errorf("model %q: %w", name, err)
+		}
+	}
 	c := config{
 		file:    file,
 		baseURL: os.Getenv("OPENAI_BASE_URL"), apiKey: os.Getenv("OPENAI_API_KEY"),
@@ -131,7 +138,7 @@ func loadConfig(paths ...string) (config, error) {
 		c.outputDir = file.OutputDir
 	}
 	if c.outputDir == "" {
-		c.outputDir = "images"
+		c.outputDir = os.TempDir()
 	}
 	c.outputDir, err = filepath.Abs(c.outputDir)
 	if err != nil {
@@ -142,15 +149,16 @@ func loadConfig(paths ...string) (config, error) {
 
 func (c config) resolveCredentials(in generateInput) (credentials, error) {
 	family := credentials{}
-	familyName := ""
 	model := c.file.Models[in.Model]
-	switch {
-	case strings.HasPrefix(strings.ToLower(in.Model), "gemini"):
+	familyName, err := c.modelFamily(in)
+	if err != nil {
+		return credentials{}, err
+	}
+	switch familyName {
+	case "gemini":
 		family = c.gemini
-		familyName = "gemini"
-	case strings.HasPrefix(strings.ToLower(in.Model), "gpt-image"):
+	case "gpt-image":
 		family = c.gptImage
-		familyName = "gpt-image"
 	}
 	first := func(values ...string) string {
 		for _, value := range values {

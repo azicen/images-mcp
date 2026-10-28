@@ -15,10 +15,12 @@ import (
 )
 
 type generateInput struct {
+	API        string `json:"api,omitempty" jsonschema:"Optional API route: gemini or chat; gpt, gpt-image or images; overrides model configuration"`
+	APIType    string `json:"api_type,omitempty" jsonschema:"Alias for api"`
 	BaseURL    string `json:"base_url,omitempty" jsonschema:"Optional relay base URL; overrides model family and OPENAI_BASE_URL defaults"`
 	APIKey     string `json:"api_key,omitempty" jsonschema:"Optional relay API key; overrides model family and OPENAI_API_KEY defaults"`
 	Prompt     string `json:"prompt" jsonschema:"Generation or editing instructions"`
-	Model      string `json:"model" jsonschema:"Gemini or GPT Image model name"`
+	Model      string `json:"model" jsonschema:"Relay model name; custom names require api or api_type"`
 	InputImage string `json:"input_image,omitempty" jsonschema:"Optional local path, HTTP(S) URL, data URI, or raw base64 image"`
 	Size       string `json:"size,omitempty" jsonschema:"Optional GPT Image size"`
 	Quality    string `json:"quality,omitempty" jsonschema:"Optional GPT Image quality"`
@@ -38,28 +40,80 @@ type service struct {
 	client *http.Client
 }
 
-func route(in generateInput) (string, error) {
-	if strings.TrimSpace(in.Prompt) == "" {
-		return "", fmt.Errorf("prompt is required")
+// explicitFamily normalizes both aliases and rejects ambiguous selections.
+func explicitFamily(api, apiType string) (string, error) {
+	var family string
+	for _, field := range []struct{ name, value string }{{"api", api}, {"api_type", apiType}} {
+		if field.value == "" {
+			continue
+		}
+		var selected string
+		switch strings.ToLower(field.value) {
+		case "gemini", "chat":
+			selected = "gemini"
+		case "gpt", "gpt-image", "images":
+			selected = "gpt-image"
+		default:
+			return "", fmt.Errorf("invalid %s: expected gemini, chat, gpt, gpt-image, or images", field.name)
+		}
+		if family != "" && family != selected {
+			return "", fmt.Errorf("api and api_type select conflicting routes")
+		}
+		family = selected
+	}
+	return family, nil
+}
+
+func (c config) modelFamily(in generateInput) (string, error) {
+	family, err := explicitFamily(in.API, in.APIType)
+	if err != nil || family != "" {
+		return family, err
+	}
+	model := c.file.Models[in.Model]
+	family, err = explicitFamily(model.API, model.APIType)
+	if err != nil || family != "" {
+		return family, err
 	}
 	switch {
 	case strings.HasPrefix(strings.ToLower(in.Model), "gemini"):
+		return "gemini", nil
+	case strings.HasPrefix(strings.ToLower(in.Model), "gpt-image"):
+		return "gpt-image", nil
+	default:
+		return "", nil
+	}
+}
+
+func route(in generateInput) (string, error) {
+	return (config{}).route(in)
+}
+
+func (c config) route(in generateInput) (string, error) {
+	if strings.TrimSpace(in.Prompt) == "" {
+		return "", fmt.Errorf("prompt is required")
+	}
+	family, err := c.modelFamily(in)
+	if err != nil {
+		return "", err
+	}
+	switch family {
+	case "gemini":
 		if in.Size != "" || in.Quality != "" {
 			return "", fmt.Errorf("size and quality are only supported for GPT Image")
 		}
 		return "/chat/completions", nil
-	case strings.HasPrefix(strings.ToLower(in.Model), "gpt-image"):
+	case "gpt-image":
 		if in.InputImage != "" {
 			return "/images/edits", nil
 		}
 		return "/images/generations", nil
 	default:
-		return "", fmt.Errorf("unsupported model family: use gemini or gpt-image")
+		return "", fmt.Errorf("unsupported model family: use gemini or gpt-image prefixes, or specify api/api_type")
 	}
 }
 
 func (s *service) request(ctx context.Context, in generateInput) (*http.Request, string, error) {
-	endpoint, err := route(in)
+	endpoint, err := s.config.route(in)
 	if err != nil {
 		return nil, "", err
 	}

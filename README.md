@@ -47,7 +47,8 @@ families:
   gpt-image:
     api_key: your-gpt-key
 models:
-  gemini-3.1-flash-image:
+  custom-image-model:
+    api: chat
     api_key: your-model-key
 output_dir: /absolute/path/to/generated-images
 ```
@@ -58,7 +59,7 @@ Equivalent JSON is supported with a `.json` extension:
 {
   "default": {"base_url": "https://relay.example/v1", "api_key": "your-default-key"},
   "families": {"gemini": {"base_url": "https://gemini-relay.example/v1"}, "gpt-image": {"api_key": "your-gpt-key"}},
-  "models": {"gemini-3.1-flash-image": {"api_key": "your-model-key"}},
+  "models": {"custom-image-model": {"api_type": "chat", "api_key": "your-model-key"}},
   "output_dir": "/absolute/path/to/generated-images"
 }
 ```
@@ -90,15 +91,23 @@ Each field (`base_url` and `api_key`) resolves independently:
 5. File `default`.
 6. Environment `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
 
-Family detection uses a case-insensitive model prefix. Empty or whitespace-only credential fields fall through; partial overrides replace only the supplied field. Invalid nonempty winning values fail validation. Configuration is read at startup.
+Family selection uses the explicit API type when supplied, otherwise a case-insensitive model prefix. Empty or whitespace-only credential fields fall through; partial overrides replace only the supplied field. Invalid nonempty winning values fail validation. Configuration is read at startup.
 
-Output directory priority: file `output_dir`, then `IMAGE_OUTPUT_DIR`, then `./images`. Relative paths resolve from the server's working directory, including file-supplied paths.
+Output directory priority: file `output_dir`, then `IMAGE_OUTPUT_DIR`, then the OS temporary directory (`os.TempDir()`). Both output settings default to the empty string `""`; when neither supplies a nonempty value, `os.TempDir()` is used. The result is made absolute with `filepath.Abs()`. Relative paths resolve from the server's working directory, including file-supplied paths.
 
 Call `generate_image` with:
 
 ```json
 {"model":"gemini-3.1-flash-image","prompt":"A watercolor mountain landscape"}
 ```
+
+For custom model names, set `api` or its alias `api_type` in the exact model configuration entry or tool arguments:
+
+```json
+{"model":"custom-image-model","api_type":"images","prompt":"A watercolor mountain landscape"}
+```
+
+API values are case-insensitive: `gemini` or `chat` selects `/chat/completions`; `gpt`, `gpt-image`, or `images` selects `/images/generations`, or `/images/edits` when `input_image` is provided. Tool API arguments override model API configuration; explicit API selection overrides model prefixes and selects the credential family (`gemini` or `gpt-image`). Without an explicit value, the existing `gemini` / `gpt-image` prefix detection applies. Empty strings mean unspecified. Invalid values or aliases selecting different routes return errors; invalid model API settings fail startup.
 
 For GPT Image editing:
 

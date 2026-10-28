@@ -557,7 +557,7 @@ func TestFileResolution(t *testing.T) {
 func TestOutputDirectory(t *testing.T) {
 	t.Chdir(t.TempDir())
 	for _, tt := range []struct{ file, env, want string }{
-		{"", "", "images"}, {"", "env-images", "env-images"}, {"file-images", "env-images", "file-images"},
+		{"", "", os.TempDir()}, {"", "env-images", "env-images"}, {"file-images", "env-images", "file-images"},
 		{t.TempDir(), "env-images", ""},
 	} {
 		t.Setenv("IMAGE_OUTPUT_DIR", tt.env)
@@ -593,7 +593,7 @@ func TestConfigSnapshot(t *testing.T) {
 	t.Setenv("GEMINI_BASE_URL", "https://env-family.example")
 	t.Setenv("GEMINI_API_KEY", "env-family-key")
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("models:\n  gemini-test:\n    api_key: file-model-key\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("models:\n  custom-model:\n    api: CHAT\n    api_key: file-model-key\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := loadConfig(path)
@@ -604,11 +604,141 @@ func TestConfigSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	req, _, err := (&service{config: c}).request(context.Background(), generateInput{Model: "gemini-test", Prompt: "draw"})
+	req, _, err := (&service{config: c}).request(context.Background(), generateInput{Model: "custom-model", Prompt: "draw"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.URL.String() != "https://env-family.example/v1/chat/completions" || req.Header.Get("Authorization") != "Bearer file-model-key" {
 		t.Fatal("startup snapshot was not used")
+	}
+}
+
+// TestExplicitAPIRouting covers each alias/value in config and tool inputs,
+// both edit branches, case folding, prefix override, and family credentials.
+// All successful requests must use the selected endpoint and family key.
+func TestExplicitAPIRouting(t *testing.T) {
+	for _, field := range []string{"api", "api_type"} {
+		for _, value := range []string{"gemini", "ChAt", "gpt", "GPT-IMAGE", "images"} {
+			for _, source := range []string{"model", "tool"} {
+				for _, edit := range []bool{false, true} {
+					t.Run(field+"/"+value+"/"+source+map[bool]string{true: "/edit", false: "/generate"}[edit], func(t *testing.T) {
+						chat := strings.EqualFold(value, "gemini") || strings.EqualFold(value, "chat")
+						family, endpoint := "gpt-image", "/images/generations"
+						if chat {
+							family, endpoint = "gemini", "/chat/completions"
+						} else if edit {
+							endpoint = "/images/edits"
+						}
+						c := config{file: fileConfig{Families: map[string]fileCredentials{
+							family: {BaseURL: "https://family.example", APIKey: family},
+						}}}
+						in := generateInput{Model: "custom-model", Prompt: "draw"}
+						if edit {
+							in.InputImage = "data:image/png;base64," + testPNG
+						}
+						encoded, err := json.Marshal(map[string]string{field: value})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if source == "model" {
+							path := filepath.Join(t.TempDir(), "config.json")
+							body := []byte(`{"models":{"custom-model":` + string(encoded) + `}}`)
+							if err := os.WriteFile(path, body, 0600); err != nil {
+								t.Fatal(err)
+							}
+							file, err := loadFileConfig(path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							c.file.Models = file.Models
+						} else {
+							if err := json.Unmarshal(encoded, &in); err != nil {
+								t.Fatal(err)
+							}
+							// Explicit tool values override both config and a contrary prefix.
+							in.Model = "gemini-custom"
+							opposite := "images"
+							if chat {
+								in.Model, opposite = "gpt-image-custom", "chat"
+							}
+							c.file.Models = map[string]fileCredentials{in.Model: {API: opposite}}
+						}
+						req, got, err := (&service{config: c}).request(context.Background(), in)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer req.Body.Close()
+						if got != endpoint || req.URL.Path != "/v1"+endpoint || req.Header.Get("Authorization") != "Bearer "+family {
+							t.Fatalf("route %q, URL %s, authorization %q", got, req.URL, req.Header.Get("Authorization"))
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestInvalidAPI covers invalid aliases at startup and request time, including
+// valid-prefix models that must not silently fall back, and conflicting aliases.
+func TestInvalidAPI(t *testing.T) {
+	for _, field := range []string{"api", "api_type"} {
+		for _, ext := range []string{"json", "yaml"} {
+			t.Run(field+"/"+ext, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "config."+ext)
+				body := `{"models":{"gemini-test":{"` + field + `":"invalid"}}}`
+				if ext == "yaml" {
+					body = "models:\n  gemini-test:\n    " + field + ": invalid\n"
+				}
+				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "invalid "+field) {
+					t.Fatalf("startup error = %v", err)
+				}
+			})
+		}
+		in := generateInput{Model: "gemini-test", Prompt: "draw"}
+		if field == "api" {
+			in.API = "invalid"
+		} else {
+			in.APIType = "invalid"
+		}
+		if _, err := route(in); err == nil || !strings.Contains(err.Error(), "invalid "+field) {
+			t.Fatalf("tool error = %v", err)
+		}
+	}
+	if _, err := route(generateInput{Model: "custom", Prompt: "draw", API: "chat", APIType: "images"}); err == nil {
+		t.Fatal("accepted conflicting aliases")
+	}
+	if got, err := route(generateInput{Model: "custom", Prompt: "draw", API: "gemini", APIType: "CHAT"}); err != nil || got != "/chat/completions" {
+		t.Fatalf("equivalent aliases = %q, %v", got, err)
+	}
+}
+
+// TestUnsetOutputDirectory covers absent config and an unset environment;
+// the empty settings branch and configured overrides are in TestOutputDirectory.
+func TestUnsetOutputDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	previous, present := os.LookupEnv("IMAGE_OUTPUT_DIR")
+	if err := os.Unsetenv("IMAGE_OUTPUT_DIR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv("IMAGE_OUTPUT_DIR", previous)
+		} else {
+			_ = os.Unsetenv("IMAGE_OUTPUT_DIR")
+		}
+	})
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.outputDir != want {
+		t.Fatalf("output directory = %q, want %q", c.outputDir, want)
 	}
 }

@@ -8,9 +8,12 @@ danqing is a stdio MCP server for image generation through OpenAI-compatible rel
 
 The official github.com/modelcontextprotocol/go-sdk v1.8.0 registers generate_image with mcp.AddTool and runs with mcp.StdioTransport. Configuration, request construction, response extraction, and image storage remain small, independently testable components in package main.
 
-* Route A: model names beginning with gemini (for example gemini-3.1-flash-image) use POST /v1/chat/completions with an OpenAI user message. Text-only requests use string content; editing requests use text and image_url content parts. Responses may contain Markdown images, data URIs, raw base64, or structured image_url parts.
-* Route B: model names beginning with gpt-image (including gpt-image-2.5, gpt-image-2.5-flare, and gpt-image-2.5-sunburst) use POST /v1/images/generations for text-to-image and POST /v1/images/edits with multipart/form-data and an image file part when input_image is provided. Image responses accept data[].url and data[].b64_json.
-* Unknown model families fail before network I/O. No automatic retries: generation may incur charges. Requests propagate MCP cancellation and use a five-minute HTTP timeout.
+* Route A: explicit `api` / `api_type` values `gemini` or `chat`, or model names beginning with gemini when unspecified (for example gemini-3.1-flash-image) use POST /v1/chat/completions with an OpenAI user message. Text-only requests use string content; editing requests use text and image_url content parts. Responses may contain Markdown images, data URIs, raw base64, or structured image_url parts.
+* Route B: explicit `api` / `api_type` values `gpt`, `gpt-image`, or `images`, or model names beginning with gpt-image when unspecified (including gpt-image-2.5, gpt-image-2.5-flare, and gpt-image-2.5-sunburst) use POST /v1/images/generations for text-to-image and POST /v1/images/edits with multipart/form-data and an image file part when input_image is provided. Image responses accept data[].url and data[].b64_json.
+
+API values are case-insensitive. Nonempty tool API arguments override the exact model configuration entry, and explicit selection overrides model prefixes. Empty strings mean unspecified. Invalid API values and aliases selecting different routes fail clearly; invalid model API configuration fails startup. Equivalent aliases may be supplied together.
+
+* Unknown model families without explicit API selection fail before network I/O. No automatic retries: generation may incur charges. Requests propagate MCP cancellation and use a five-minute HTTP timeout.
 
 The base URL may be an origin or include a /v1 suffix (including a relay path prefix); endpoint construction adds /v1 only when absent. Authorization is attached only to relay requests, never image downloads. Redirects must not forward relay credentials to another origin.
 
@@ -21,7 +24,9 @@ Object properties (additional properties disallowed by SDK inference):
 | Property | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | prompt | string | yes | Nonempty generation/edit instructions |
-| model | string | yes | Gemini or GPT Image relay model name |
+| model | string | yes | Relay model name; custom names require explicit API selection |
+| api | string | no | API route override: gemini/chat or gpt/gpt-image/images |
+| api_type | string | no | Alias for api |
 | base_url | string | no | Per-request relay base URL override |
 | api_key | string | no | Per-request bearer credential override |
 | input_image | string | no | Local file path, HTTP(S) URL, image data URI, or raw base64 |
@@ -40,7 +45,7 @@ Each field resolves independently, from highest to lowest priority:
 
 1. Nonempty generate_image arguments `base_url` and `api_key`.
 2. File `models` entry matching the exact, case-sensitive model name.
-3. File `families` entry (`gemini` or `gpt-image`, selected by case-insensitive model prefix).
+3. File `families` entry (`gemini` or `gpt-image`, selected by explicit API type or case-insensitive model prefix).
 4. Family environment variables: `GEMINI_BASE_URL` / `GEMINI_API_KEY` or `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY`.
 5. File `default` credentials.
 6. Environment `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
@@ -51,9 +56,9 @@ The resolved base URL must be a nonempty HTTP(S) URL without embedded credential
 
 CLI flags `-config PATH` and `-c PATH` select an explicit file; the last occurrence wins. Without either flag, startup searches the working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json`, loading only the first existing file. Missing discovery candidates are skipped; an explicit missing file, unreadable file, invalid file, or unsupported extension fails startup. Help exits successfully; unknown flags, empty explicit paths, and positional arguments fail.
 
-Configuration uses `default`, `families`, `models`, and `output_dir`. Credential objects contain `base_url` and `api_key`. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
+Configuration uses `default`, `families`, `models`, and `output_dir`. Credential objects contain `base_url` and `api_key`. Model entries additionally accept `api` or `api_type`, for example `models: {"custom-model": {"api": "images"}}`. The selected API determines both the request route and the credential family. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
 
-Output directory priority is file `output_dir`, then `IMAGE_OUTPUT_DIR`, then `./images`. Relative paths resolve from the server working directory, including paths supplied in a configuration file; the directory is made absolute at startup and created when saving images.
+Output directory priority is file `output_dir`, then `IMAGE_OUTPUT_DIR`, then the OS temporary directory (`os.TempDir()`). Both settings default to `""`; absent or empty settings use `os.TempDir()`. The selected path is resolved with `filepath.Abs()`. Relative paths resolve from the server working directory, including paths supplied in a configuration file; the directory is made absolute at startup and created when saving images.
 
 Stdout is reserved for MCP; startup errors go to stderr. SIGINT/SIGTERM cancel the server.
 

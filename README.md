@@ -33,6 +33,8 @@ Configure your MCP client (use absolute paths):
 
 ### Configuration files
 
+Start with [danqing.example.yaml](danqing.example.yaml), a commented template covering all configuration fields. Copy it to `danqing.yaml` and replace the placeholder relay URLs and API keys.
+
 Use `-config /absolute/path/to/danqing.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
 
 Example `danqing.yaml`:

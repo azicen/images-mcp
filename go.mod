@@ -1,4 +1,4 @@
-module danqing
+module images-mcp
 
 go 1.27.1
 

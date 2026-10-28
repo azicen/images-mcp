@@ -48,7 +48,7 @@ type fileConfig struct {
 }
 
 func parseFlags(args []string, output io.Writer) (string, error) {
-	flags := flag.NewFlagSet("danqing", flag.ContinueOnError)
+	flags := flag.NewFlagSet("images-mcp", flag.ContinueOnError)
 	flags.SetOutput(output)
 	var path string
 	flags.StringVar(&path, "config", "", "YAML or JSON configuration file")
@@ -70,7 +70,7 @@ func parseFlags(args []string, output io.Writer) (string, error) {
 func loadFileConfig(path string) (fileConfig, error) {
 	var c fileConfig
 	if path == "" {
-		for _, candidate := range []string{"danqing.yaml", "danqing.yml", "danqing.json"} {
+		for _, candidate := range []string{"images-mcp.yaml", "images-mcp.yml", "images-mcp.json"} {
 			_, err := os.Stat(candidate)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -255,7 +255,7 @@ func (c config) generationDescription() string {
 }
 
 func newServer(s *service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "danqing", Version: "0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.1.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
 		return &mcp.CallToolResult{}, out, err
@@ -306,7 +306,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "danqing:", err)
+		fmt.Fprintln(os.Stderr, "images-mcp:", err)
 		os.Exit(1)
 	}
 }

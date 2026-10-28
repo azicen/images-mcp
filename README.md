@@ -1,4 +1,4 @@
-# danqing
+# images-mcp
 
 A Go MCP server for image generation and editing through one OpenAI-compatible relay. See [DESIGN.md](DESIGN.md) for routing, schema, and limits.
 
@@ -7,7 +7,7 @@ Build and test:
 ```sh
 go mod tidy
 go test -race -cover ./...
-go build -o bin/danqing .
+go build -o bin/images-mcp .
 ```
 
 Configure your MCP client (use absolute paths):
@@ -15,8 +15,8 @@ Configure your MCP client (use absolute paths):
 ```json
 {
   "mcpServers": {
-    "danqing": {
-      "command": "/absolute/path/to/danqing/bin/danqing",
+    "images-mcp": {
+      "command": "/absolute/path/to/images-mcp/bin/images-mcp",
       "env": {
         "OPENAI_BASE_URL": "https://relay.example/v1",
         "OPENAI_API_KEY": "your-default-key",
@@ -33,11 +33,11 @@ Configure your MCP client (use absolute paths):
 
 ### Configuration files
 
-Start with [danqing.example.yaml](danqing.example.yaml), a commented template covering all configuration fields. Copy it to `danqing.yaml` and replace the placeholder relay URLs and API keys.
+Start with [images-mcp.example.yaml](images-mcp.example.yaml), a commented template covering all configuration fields. Copy it to `images-mcp.yaml` and replace the placeholder relay URLs and API keys.
 
-Use `-config /absolute/path/to/danqing.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
+Use `-config /absolute/path/to/images-mcp.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `images-mcp.yaml`, `images-mcp.yml`, then `images-mcp.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
 
-Example `danqing.yaml`:
+Example `images-mcp.yaml`:
 
 ```yaml
 default_model: custom-image-model
@@ -77,9 +77,9 @@ MCP client configuration using a file:
 ```json
 {
   "mcpServers": {
-    "danqing": {
-      "command": "/absolute/path/to/danqing/bin/danqing",
-      "args": ["-config", "/absolute/path/to/danqing.yaml"],
+    "images-mcp": {
+      "command": "/absolute/path/to/images-mcp/bin/images-mcp",
+      "args": ["-config", "/absolute/path/to/images-mcp.yaml"],
       "env": {"OPENAI_API_KEY": "optional-fallback-key"}
     }
   }

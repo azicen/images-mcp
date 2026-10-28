@@ -1,8 +1,8 @@
-# danqing design
+# images-mcp design
 
 ## Purpose and compatibility
 
-danqing is a stdio MCP server for image generation through OpenAI-compatible relays, such as NewAPI. OPENAI_BASE_URL and OPENAI_API_KEY provide defaults for all supported models, with family and request overrides. Clients that assume native Gemini endpoints, separate provider credentials, or a single image-generation endpoint (as in standard mcp-image setups) cannot express this relay contract reliably. This is a compatibility constraint, not a claim that every mcp-image version has identical behavior.
+images-mcp is a stdio MCP server for image generation through OpenAI-compatible relays, such as NewAPI. OPENAI_BASE_URL and OPENAI_API_KEY provide defaults for all supported models, with family and request overrides. Clients that assume native Gemini endpoints, separate provider credentials, or a single image-generation endpoint (as in standard mcp-image setups) cannot express this relay contract reliably. This is a compatibility constraint, not a claim that every mcp-image version has identical behavior.
 
 ## Architecture and routing
 
@@ -71,7 +71,7 @@ Missing, empty, or whitespace-only values fall through to the next level. Partia
 
 The resolved base URL must be a nonempty HTTP(S) URL without embedded credentials, query, or fragment; trailing slashes are removed and `/v1` is appended only when absent. The resolved API key must be a nonempty printable ASCII token without whitespace. Surrounding whitespace is trimmed. Validation errors never include credential values. Credentials are attached only to the generation/edit request header, never the payload, image downloads, saved metadata, or filenames.
 
-CLI flags `-config PATH` and `-c PATH` select an explicit file; the last occurrence wins. Without either flag, startup searches the working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json`, loading only the first existing file. Missing discovery candidates are skipped; an explicit missing file, unreadable file, invalid file, or unsupported extension fails startup. Help exits successfully; unknown flags, empty explicit paths, and positional arguments fail.
+CLI flags `-config PATH` and `-c PATH` select an explicit file; the last occurrence wins. Without either flag, startup searches the working directory for `images-mcp.yaml`, `images-mcp.yml`, then `images-mcp.json`, loading only the first existing file. Missing discovery candidates are skipped; an explicit missing file, unreadable file, invalid file, or unsupported extension fails startup. Help exits successfully; unknown flags, empty explicit paths, and positional arguments fail.
 
 Configuration uses `default_model`, `default`, `families`, `models`, and `output_dir`. Top-level `default_model` is a model ID string, independent of the `default` credentials object. Missing or empty model arguments use this ID before routing, credential resolution, payload construction, and output metadata. If neither supplies an ID, generation fails before network I/O with guidance to supply `model` or configure `default_model`. Credential objects contain `base_url` and `api_key`. Model entries additionally accept `api` or `api_type`, for example `models: {"custom-model": {"api": "images"}}`. Model entries also accept `description` (short summary, roughly 60–80 characters) and optional `notes` (detailed, potentially multi-line guidelines, edge cases, and trade-offs). Neither field is supported on `default` or `families`. Configured custom names without a recognized prefix must specify `api` or `api_type`; unroutable entries fail startup so discovery can report a valid route for every record. The selected API determines both the request route and the credential family. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
 
@@ -84,7 +84,7 @@ Stdout is reserved for MCP; startup errors go to stderr. SIGINT/SIGTERM cancel t
 1. Create module and pin SDK v1.8.0; inspect its actual tool and result APIs.
 2. Implement configuration, deterministic routing/payloads, HTTP boundary, parsing/storage, and stdio entry point.
 3. Add table-driven parser/router tests and httptest coverage for JSON/multipart payloads, downloads, validation, cancellation, and error handling; exercise MCP registration in memory.
-4. Run go mod tidy, go test ./..., and go build -o bin/danqing .; also run race detection and vet.
+4. Run go mod tidy, go test ./..., and go build -o bin/images-mcp .; also run race detection and vet.
 
 ## Scope and limitations
 

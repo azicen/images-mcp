@@ -1,5 +1,5 @@
-# Copy to danqing.yaml, replace the placeholder endpoints and keys, then start
-# danqing in that directory or pass -config /absolute/path/to/danqing.yaml.
+# Copy to images-mcp.yaml, replace the placeholder endpoints and keys, then start
+# images-mcp in that directory or pass -config /absolute/path/to/images-mcp.yaml.
 # Model availability and supported options depend on your relay.
 default_model: gemini-3.1-flash-image
 

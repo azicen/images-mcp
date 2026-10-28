@@ -470,7 +470,7 @@ func TestDiscovery(t *testing.T) {
 	if err != nil || c.OutputDir != "" {
 		t.Fatal(c, err)
 	}
-	for _, name := range []string{"danqing.json", "danqing.yml", "danqing.yaml"} {
+	for _, name := range []string{"images-mcp.json", "images-mcp.yml", "images-mcp.yaml"} {
 		body := `{"output_dir":"` + name + `"}`
 		if err := os.WriteFile(name, []byte(body), 0600); err != nil {
 			t.Fatal(err)
@@ -480,14 +480,14 @@ func TestDiscovery(t *testing.T) {
 			t.Fatal(c, err)
 		}
 	}
-	if err := os.WriteFile("danqing.yaml", []byte("["), 0600); err != nil {
+	if err := os.WriteFile("images-mcp.yaml", []byte("["), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadFileConfig(""); err == nil {
 		t.Fatal("fell back from invalid discovery file")
 	}
-	c, err = loadFileConfig("danqing.json")
-	if err != nil || c.OutputDir != "danqing.json" {
+	c, err = loadFileConfig("images-mcp.json")
+	if err != nil || c.OutputDir != "images-mcp.json" {
 		t.Fatal("explicit file did not override discovery", err)
 	}
 }

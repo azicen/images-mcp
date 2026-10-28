@@ -34,19 +34,26 @@ One request returns every image supplied by the relay. Results contain JSON text
 
 Markdown destinations, image data URIs, standalone HTTP(S) URLs, raw base64, and structured chat image parts feed the same loader. Downloads and local files are limited to 32 MiB; JSON responses to 64 MiB; at most 16 images per response. Base64 accepts padded/unpadded standard and URL-safe encodings. MIME type is detected from bytes, restricted to PNG/JPEG/GIF/WebP; misleading extensions or data URI labels do not control output types. Files use UTC timestamps and cryptographically random suffixes, exclusive creation, and owner-only permissions. Failed multi-image calls remove files already created by that call.
 
-## Environment
+## Configuration
 
 Each field resolves independently, from highest to lowest priority:
 
 1. Nonempty generate_image arguments `base_url` and `api_key`.
-2. Model family environment variables (case-insensitive model prefix): `GEMINI_BASE_URL` / `GEMINI_API_KEY` for `gemini`, or `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY` for `gpt-image`.
-3. Default `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
+2. File `models` entry matching the exact, case-sensitive model name.
+3. File `families` entry (`gemini` or `gpt-image`, selected by case-insensitive model prefix).
+4. Family environment variables: `GEMINI_BASE_URL` / `GEMINI_API_KEY` or `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY`.
+5. File `default` credentials.
+6. Environment `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
 
 Missing, empty, or whitespace-only values fall through to the next level. Partial overrides replace only the supplied field: a family base URL alone uses the default API key, and a request API key alone uses the family or default base URL. Environment values are captured at startup; credentials are resolved and validated before each request, so defaults need not be configured when overrides supply both fields. Invalid nonempty resolved values fail rather than silently falling back.
 
 The resolved base URL must be a nonempty HTTP(S) URL without embedded credentials, query, or fragment; trailing slashes are removed and `/v1` is appended only when absent. The resolved API key must be a nonempty printable ASCII token without whitespace. Surrounding whitespace is trimmed. Validation errors never include credential values. Credentials are attached only to the generation/edit request header, never the payload, image downloads, saved metadata, or filenames.
 
-* IMAGE_OUTPUT_DIR: optional, defaults to ./images; resolved to an absolute directory and created as needed.
+CLI flags `-config PATH` and `-c PATH` select an explicit file; the last occurrence wins. Without either flag, startup searches the working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json`, loading only the first existing file. Missing discovery candidates are skipped; an explicit missing file, unreadable file, invalid file, or unsupported extension fails startup. Help exits successfully; unknown flags, empty explicit paths, and positional arguments fail.
+
+Configuration uses `default`, `families`, `models`, and `output_dir`. Credential objects contain `base_url` and `api_key`. YAML uses gopkg.in/yaml.v3 and JSON uses encoding/json; extensions select the parser. Files are limited to 1 MiB, YAML accepts a single document, and parse errors omit file contents to avoid exposing credentials. Unknown fields are ignored. Empty YAML and null configurations supply no overrides. Configuration and environment are captured at startup.
+
+Output directory priority is file `output_dir`, then `IMAGE_OUTPUT_DIR`, then `./images`. Relative paths resolve from the server working directory, including paths supplied in a configuration file; the directory is made absolute at startup and created when saving images.
 
 Stdout is reserved for MCP; startup errors go to stderr. SIGINT/SIGTERM cancel the server.
 

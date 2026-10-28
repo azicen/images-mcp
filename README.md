@@ -6,7 +6,7 @@ Build and test:
 
 ```sh
 go mod tidy
-go test ./...
+go test -race -cover ./...
 go build -o bin/danqing .
 ```
 
@@ -31,15 +31,68 @@ Configure your MCP client (use absolute paths):
 }
 ```
 
-### Credential Resolution Hierarchy
-Each field (`base_url` and `api_key`) resolves independently:
-1. **Per-request parameters**: `base_url` or `api_key` passed in the `generate_image` tool call.
-2. **Model family environment**:
-   - Gemini models (`gemini*`): `GEMINI_BASE_URL`, `GEMINI_API_KEY`.
-   - GPT Image models (`gpt-image*`): `GPT_IMAGE_BASE_URL`, `GPT_IMAGE_API_KEY`.
-3. **Global default**: `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
+### Configuration files
 
-`IMAGE_OUTPUT_DIR` defaults to `./images` relative to the server's working directory.
+Use `-config /absolute/path/to/danqing.yaml` (or `-c`) to select a file. Otherwise, the server checks its working directory for `danqing.yaml`, `danqing.yml`, then `danqing.json` and loads the first existing file. An invalid or unreadable selected file stops startup. Explicit paths must exist. Use `-h` for flag help.
+
+Example `danqing.yaml`:
+
+```yaml
+default:
+  base_url: https://relay.example/v1
+  api_key: your-default-key
+families:
+  gemini:
+    base_url: https://gemini-relay.example/v1
+  gpt-image:
+    api_key: your-gpt-key
+models:
+  gemini-3.1-flash-image:
+    api_key: your-model-key
+output_dir: /absolute/path/to/generated-images
+```
+
+Equivalent JSON is supported with a `.json` extension:
+
+```json
+{
+  "default": {"base_url": "https://relay.example/v1", "api_key": "your-default-key"},
+  "families": {"gemini": {"base_url": "https://gemini-relay.example/v1"}, "gpt-image": {"api_key": "your-gpt-key"}},
+  "models": {"gemini-3.1-flash-image": {"api_key": "your-model-key"}},
+  "output_dir": "/absolute/path/to/generated-images"
+}
+```
+
+MCP client configuration using a file:
+
+```json
+{
+  "mcpServers": {
+    "danqing": {
+      "command": "/absolute/path/to/danqing/bin/danqing",
+      "args": ["-config", "/absolute/path/to/danqing.yaml"],
+      "env": {"OPENAI_API_KEY": "optional-fallback-key"}
+    }
+  }
+}
+```
+
+The environment-only client example above also remains supported. Keep files containing API keys private.
+
+### Credential resolution
+
+Each field (`base_url` and `api_key`) resolves independently:
+
+1. Per-request tool argument.
+2. File `models` entry for the exact, case-sensitive model name.
+3. File `families` entry (`gemini` or `gpt-image`).
+4. Family environment (`GEMINI_BASE_URL` / `GEMINI_API_KEY` or `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY`).
+5. File `default`.
+6. Environment `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
+
+Family detection uses a case-insensitive model prefix. Empty or whitespace-only credential fields fall through; partial overrides replace only the supplied field. Invalid nonempty winning values fail validation. Configuration is read at startup.
+
+Output directory priority: file `output_dir`, then `IMAGE_OUTPUT_DIR`, then `./images`. Relative paths resolve from the server's working directory, including file-supplied paths.
 
 Call `generate_image` with:
 

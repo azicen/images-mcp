@@ -395,3 +395,220 @@ func TestMCP(t *testing.T) {
 		t.Fatal(result, err)
 	}
 }
+
+// TestFlags covers both aliases, equals syntax, last-value precedence, help,
+// and rejected unknown flags, missing/empty values, and positional arguments.
+func TestFlags(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want string
+		bad  bool
+	}{
+		{nil, "", false}, {[]string{"-config", "a.yaml"}, "a.yaml", false},
+		{[]string{"-c=a.json"}, "a.json", false}, {[]string{"-c", "a", "-config", "b"}, "b", false},
+		{[]string{"-config"}, "", true}, {[]string{"-c="}, "", true},
+		{[]string{"-unknown"}, "", true}, {[]string{"extra"}, "", true}, {[]string{"-h"}, "", true},
+	} {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			got, err := parseFlags(tt.args, &bytes.Buffer{})
+			if (err != nil) != tt.bad || got != tt.want {
+				t.Fatalf("got %q, %v", got, err)
+			}
+		})
+	}
+}
+
+// TestFileLoading covers each extension, the complete schema, empty files,
+// malformed/type-invalid files, multiple documents, unsupported extensions,
+// missing explicit files, oversized input, and directories. Errors omit secrets.
+func TestFileLoading(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		bad        bool
+	}{
+		{"config.yaml", "default:\n  base_url: https://default.example\n  api_key: default-key\nfamilies:\n  gemini:\n    api_key: family-key\nmodels:\n  gemini-test:\n    api_key: model-key\noutput_dir: output\n", false},
+		{"config.yml", "default: {api_key: key}", false},
+		{"config.json", `{"default":{"base_url":"https://default.example","api_key":"default-key"},"families":{"gemini":{"api_key":"family-key"}},"models":{"gemini-test":{"api_key":"model-key"}},"output_dir":"output"}`, false},
+		{"empty.yaml", "", false}, {"empty.json", "", true},
+		{"bad.yaml", "api_key: [secret", true}, {"bad.json", `{"secret":`, true},
+		{"type.json", `{"default":42}`, true}, {"type.yaml", "default: []", true},
+		{"multi.yaml", "{}\n---\n{}", true}, {"duplicate.yaml", "output_dir: a\noutput_dir: b", true},
+		{"config.txt", "{}", true}, {"large.yaml", strings.Repeat(" ", (1<<20)+1), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			if err := os.WriteFile(path, []byte(tt.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := loadFileConfig(path)
+			if (err != nil) != tt.bad {
+				t.Fatalf("load: %v", err)
+			}
+			if err != nil && strings.Contains(err.Error(), "secret") {
+				t.Fatal("error exposed content")
+			}
+			if tt.name == "config.yaml" || tt.name == "config.json" {
+				if c.Default.APIKey != "default-key" || c.Default.BaseURL != "https://default.example" || c.Families["gemini"].APIKey != "family-key" || c.Models["gemini-test"].APIKey != "model-key" || c.OutputDir != "output" {
+					t.Fatalf("incomplete decode: %+v", c)
+				}
+			}
+		})
+	}
+	if _, err := loadFileConfig(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+		t.Fatal("accepted missing explicit file")
+	}
+	if _, err := loadFileConfig(t.TempDir()); err == nil {
+		t.Fatal("accepted directory")
+	}
+}
+
+// TestDiscovery paths: absent files permit env-only startup; first existing file
+// wins in YAML/YML/JSON order; invalid first file fails without fallback.
+func TestDiscovery(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, err := loadFileConfig("")
+	if err != nil || c.OutputDir != "" {
+		t.Fatal(c, err)
+	}
+	for _, name := range []string{"danqing.json", "danqing.yml", "danqing.yaml"} {
+		body := `{"output_dir":"` + name + `"}`
+		if err := os.WriteFile(name, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := loadFileConfig("")
+		if err != nil || c.OutputDir != name {
+			t.Fatal(c, err)
+		}
+	}
+	if err := os.WriteFile("danqing.yaml", []byte("["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFileConfig(""); err == nil {
+		t.Fatal("fell back from invalid discovery file")
+	}
+	c, err = loadFileConfig("danqing.json")
+	if err != nil || c.OutputDir != "danqing.json" {
+		t.Fatal("explicit file did not override discovery", err)
+	}
+}
+
+// TestFileResolution exercises every priority level for both fields and families.
+// Removing one field at each level must leave the other independently resolved;
+// blank fields fall through, exact model keys are case-sensitive, and invalid
+// nonempty winning values fail instead of using a valid lower level.
+func TestFileResolution(t *testing.T) {
+	for _, family := range []string{"gemini", "gpt-image"} {
+		t.Run(family, func(t *testing.T) {
+			model := family + "-test"
+			levels := []fileCredentials{}
+			for _, name := range []string{"request", "model", "file-family", "env-family", "file-default", "env-default"} {
+				levels = append(levels, fileCredentials{BaseURL: "https://" + name + ".example", APIKey: name})
+			}
+			resolve := func() (credentials, error) {
+				c := config{baseURL: levels[5].BaseURL, apiKey: levels[5].APIKey,
+					file: fileConfig{Default: levels[4], Families: map[string]fileCredentials{family: levels[2]}, Models: map[string]fileCredentials{model: levels[1]}},
+				}
+				env := credentials{baseURL: levels[3].BaseURL, apiKey: levels[3].APIKey}
+				if family == "gemini" {
+					c.gemini = env
+				} else {
+					c.gptImage = env
+				}
+				return c.resolveCredentials(generateInput{Model: model, BaseURL: levels[0].BaseURL, APIKey: levels[0].APIKey})
+			}
+			for i := range levels {
+				got, err := resolve()
+				if err != nil || got.baseURL != levels[i].BaseURL+"/v1" || got.apiKey != levels[i].APIKey {
+					t.Fatalf("level %d: %+v %v", i, got, err)
+				}
+				if i+1 < len(levels) {
+					levels[i].BaseURL = " \t "
+					got, err = resolve()
+					if err != nil || got.baseURL != levels[i+1].BaseURL+"/v1" || got.apiKey != levels[i].APIKey {
+						t.Fatalf("partial level %d: %+v %v", i, got, err)
+					}
+					levels[i].BaseURL = "https://url-only.example"
+					levels[i].APIKey = " "
+					got, err = resolve()
+					if err != nil || got.baseURL != "https://url-only.example/v1" || got.apiKey != levels[i+1].APIKey {
+						t.Fatalf("key fallback level %d: %+v %v", i, got, err)
+					}
+					levels[i].BaseURL = " "
+				}
+			}
+		})
+	}
+	c := config{baseURL: "https://default.example", apiKey: "default", file: fileConfig{Models: map[string]fileCredentials{"gemini-test": {BaseURL: "invalid", APIKey: "model"}}}}
+	if _, err := c.resolveCredentials(generateInput{Model: "gemini-test"}); err == nil {
+		t.Fatal("invalid model override fell back")
+	}
+	got, err := c.resolveCredentials(generateInput{Model: "Gemini-test"})
+	if err != nil || got.apiKey != "default" {
+		t.Fatal("model matching was not exact", err)
+	}
+	c.file.Models["gemini-test"] = fileCredentials{APIKey: "bad key"}
+	if _, err := c.resolveCredentials(generateInput{Model: "gemini-test"}); err == nil {
+		t.Fatal("invalid model key fell back")
+	}
+}
+
+// TestOutputDirectory covers file > env > default, relative paths resolved from
+// working directory, absolute paths, and startup snapshots of file/env values.
+func TestOutputDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, tt := range []struct{ file, env, want string }{
+		{"", "", "images"}, {"", "env-images", "env-images"}, {"file-images", "env-images", "file-images"},
+		{t.TempDir(), "env-images", ""},
+	} {
+		t.Setenv("IMAGE_OUTPUT_DIR", tt.env)
+		b, _ := json.Marshal(fileConfig{OutputDir: tt.file})
+		if err := os.WriteFile("custom.json", b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := loadConfig("custom.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tt.want
+		if want == "" {
+			want = tt.file
+		}
+		want, err = filepath.Abs(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.outputDir != want {
+			t.Fatalf("got %s want %s", c.outputDir, want)
+		}
+		t.Setenv("IMAGE_OUTPUT_DIR", "changed")
+		if c.outputDir != want {
+			t.Fatal("config changed after startup")
+		}
+	}
+}
+
+// TestConfigSnapshot verifies the load-to-request path: file model fields and
+// environment family fields combine, then remain fixed after their sources change.
+func TestConfigSnapshot(t *testing.T) {
+	t.Setenv("GEMINI_BASE_URL", "https://env-family.example")
+	t.Setenv("GEMINI_API_KEY", "env-family-key")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("models:\n  gemini-test:\n    api_key: file-model-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GEMINI_BASE_URL", "https://changed.example")
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	req, _, err := (&service{config: c}).request(context.Background(), generateInput{Model: "gemini-test", Prompt: "draw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.String() != "https://env-family.example/v1/chat/completions" || req.Header.Get("Authorization") != "Bearer file-model-key" {
+		t.Fatal("startup snapshot was not used")
+	}
+}

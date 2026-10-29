@@ -334,7 +334,7 @@ func (c config) generationDescription() string {
 }
 
 func newServer(s *service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.1.1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
 		return &mcp.CallToolResult{}, out, err

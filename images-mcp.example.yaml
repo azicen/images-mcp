@@ -1,6 +1,10 @@
 # images-mcp 配置文件
 # 文档与说明参考: https://github.com/azicen/images-mcp
 
+# 全局输出格式：file（仅文件）| base64（纯内存，零落盘）| both（文件与 Base64）
+# 优先级：顶层 output_format > default.output_format > IMAGE_OUTPUT_FORMAT > file
+output_format: file
+
 # 默认模型：当请求未传入 model 或为空时使用
 default_model: gemini-3.1-flash-image
 

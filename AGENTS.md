@@ -72,6 +72,7 @@ chmod 600 "$ABS_CONFIG"
 default_model: gemini-3.1-flash-image
 timeout: 10m
 output_dir: ""
+output_format: file # file | base64 | both；全局生效
 default:
   base_url: https://relay.example/v1
   api_key: REPLACE_WITH_USER_PROVIDED_API_KEY
@@ -95,6 +96,8 @@ models:
 ```
 
 按用户中转实际支持的 ID 修改模型键与 `default_model`；禁止臆测模型可用性。`output_dir: ""` 按 `IMAGE_OUTPUT_DIR`、系统临时目录顺序回退；需持久保存时改为用户选定的绝对目录。
+
+`output_format` 为全局配置，优先级：顶层 `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`。仅允许 `file`、`base64`、`both`（大小写不敏感）；非法值会阻止启动。
 
 按以下优先级定位配置覆盖，逐项独立解析 URL 与 Key：
 
@@ -218,7 +221,7 @@ PY
 {"prompt":"水彩风格的山间风景","timeout":"15m"}
 ```
 
-要求：`isError` 不为 `true`；结果包含 `model`、`route`、非空 `images`，每项包含存在且可读取的绝对 `path`、`mime_type`、正数 `bytes`。未配置 `default_model` 时显式传入 `model`。编辑时添加有序 `input_images`；第一张为主图，其余为参考图。仅 Images 路由传入 `size`、`quality`。
+要求：`isError` 不为 `true`；结果包含 `model`、`route`、非空 `images`，每项包含 `mime_type`、正数 `bytes`；`file` 模式包含存在且可读取的绝对 `path`，`base64` 模式仅返回 `base64` 且不落盘，`both` 模式同时返回两者。含 Base64 的模式还返回原生 MCP 图像内容。未配置 `default_model` 时显式传入 `model`。编辑时添加有序 `input_images`；第一张为主图，其余为参考图。仅 Images 路由传入 `size`、`quality`。
 
 ## 步骤 5：排障与自愈矩阵
 

@@ -2,7 +2,7 @@
 
 # images-mcp
 
-通过 OpenAI 兼容中转服务统一生成、编辑图片，并自动保存到本地。一个 Go 二进制，通过 stdio 接入 MCP 客户端。
+通过 OpenAI 兼容中转服务统一生成、编辑图片，支持本地文件或纯内存 Base64 输出。一个 Go 二进制，通过 stdio 接入 MCP 客户端。
 
 > 🤖 **让 AI Agent 帮你自动安装与配置？**
 > 直接将这句提示词发给你的 Agent：
@@ -13,7 +13,7 @@
 - **双路路由**：统一接入 Gemini Chat Completions 与 GPT Image Images API，按模型配置选择协议。
 - **统一多图编辑**：同一个 `input_images` 参数支持本地文件、URL、Data URI 和 base64；第一张为主图，后续为参考图。
 - **分层可配置超时**：请求、模型及全局超时逐层覆盖，默认 10 分钟，慢速精修可设为 15 分钟。
-- **单二进制本地落盘**：运行时无需额外依赖，自动下载或解码结果，返回本地绝对路径。
+- **单二进制输出**：运行时无需额外依赖，自动下载或解码结果，支持文件、Base64 或两者。
 
 ## 快速开始
 
@@ -56,14 +56,36 @@ images-mcp -config /absolute/path/to/images-mcp.yaml
 | `gpt-image-2.5` | `images` | 通用图文编辑、自然光影与透明背景 |
 | `gpt-image-2` | `images` | 批量草稿、灵感探索与缩略图 |
 
+## 输出配置
+
+```yaml
+output_format: file # file | base64 | both
+output_dir: ""
+```
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `output_format` | `file` | 全局输出格式，大小写不敏感，启动时规范化为小写；非法值阻止启动 |
+| `output_dir` | `""` | 文件输出目录；留空按 `IMAGE_OUTPUT_DIR`、系统临时目录回退 |
+
+优先级：顶层 `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`。不支持请求级或模型级设置。
+
+| 模式 | 行为 |
+| --- | --- |
+| `file` | 下载或解码后落盘，返回绝对 `path`，省去 Base64 内容以节省上下文 token |
+| `base64` | 下载或解码后仅保存在内存，返回 `base64`；不创建目录或临时文件，零磁盘占用 |
+| `both` | 落盘并同时返回 `path` 和 `base64` |
+
+`base64` 和 `both` 同时返回原生 MCP ImageContent、JSON 文本及结构化数据，便于图像客户端渲染和纯文本客户端读取。
+
 ## MCP 工具
 
 | 工具 | 用途 | 最小参数 |
 | --- | --- | --- |
 | `list_models` | 查看已配置模型、用途及默认模型 | `{}` |
-| `generate_image` | 生成或编辑图片并保存到本地 | `{"prompt":"水彩风格的山间风景"}` |
+| `generate_image` | 生成或编辑图片，按全局格式输出 | `{"prompt":"水彩风格的山间风景"}` |
 
-`generate_image` 可传 `model`、`input_images` 和 `timeout`；`size`、`quality` 仅适用于 Images 路由。结果包含 `model`、`route`，以及每张图片的绝对 `path`、`mime_type` 和 `bytes`。
+`generate_image` 可传 `model`、`input_images` 和 `timeout`；`size`、`quality` 仅适用于 Images 路由。结果包含 `model`、`route`，以及每张图片的 `mime_type`、`bytes`，并按全局 `output_format` 返回 `path` 或 `base64`（或两者）。
 
 输入限 PNG/JPEG/WebP，最多 16 张，每张 32 MiB、合计 64 MiB。`list_models` 只列出配置文件中的模型条目，不查询中转服务。
 

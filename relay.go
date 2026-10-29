@@ -15,7 +15,9 @@ import (
 )
 
 type imageMetadata struct {
-	Path     string `json:"path"`
+	Path     string `json:"path,omitempty"`
+	Base64   string `json:"base64,omitempty"`
+	data     []byte
 	MIMEType string `json:"mime_type"`
 	Bytes    int    `json:"bytes"`
 }
@@ -244,7 +246,9 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	defer func() {
 		if err != nil {
 			for _, img := range out.Images {
-				_ = os.Remove(img.Path)
+				if img.Path != "" {
+					_ = os.Remove(img.Path)
+				}
 			}
 		}
 	}()

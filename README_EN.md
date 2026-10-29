@@ -2,7 +2,7 @@
 
 # images-mcp
 
-Generate and edit images through OpenAI-compatible relays, with results saved locally. One Go binary connects to MCP clients over stdio.
+Generate and edit images through OpenAI-compatible relays, with local file or in-memory Base64 output. One Go binary connects to MCP clients over stdio.
 
 > 🤖 **Want an AI Agent to install and configure it for you?**
 > Send this prompt to your Agent:
@@ -13,7 +13,7 @@ Generate and edit images through OpenAI-compatible relays, with results saved lo
 - **Two API routes**: use Gemini Chat Completions and GPT Image Images APIs through one interface, with explicit per-model routing.
 - **Unified multi-image editing**: `input_images` accepts local files, URLs, Data URIs, and base64. The first image is primary; subsequent images are references.
 - **Layered timeouts**: request, model, and global settings override one another. Default to 10 minutes; allow 15 minutes for slower refinement.
-- **One binary, local output**: no extra runtime dependencies. Results are downloaded or decoded automatically and returned as absolute file paths.
+- **One binary, flexible output**: no extra runtime dependencies. Results are downloaded or decoded automatically and returned as files, Base64, or both.
 
 ## Quick start
 
@@ -56,14 +56,36 @@ These five models come from the example configuration. Availability, pricing, an
 | `gpt-image-2.5` | `images` | General editing, natural lighting, transparent backgrounds |
 | `gpt-image-2` | `images` | Batch drafts, exploration, thumbnails |
 
+## Output configuration
+
+```yaml
+output_format: file # file | base64 | both
+output_dir: ""
+```
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `output_format` | `file` | Global format, case insensitive and normalized to lowercase; invalid values fail startup |
+| `output_dir` | `""` | File output directory; falls back to `IMAGE_OUTPUT_DIR`, then the OS temporary directory |
+
+Priority: top-level `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`. There are no request or model overrides.
+
+| Mode | Behavior |
+| --- | --- |
+| `file` | Download or decode, save locally, return absolute `path`; omits Base64 to save context tokens |
+| `base64` | Download or decode in memory and return `base64`; creates no directories or temporary files and uses no disk space |
+| `both` | Save locally and return both `path` and `base64` |
+
+Both `base64` and `both` include native MCP ImageContent, JSON text, and structured data for image rendering and plain text clients.
+
 ## MCP tools
 
 | Tool | Purpose | Minimal arguments |
 | --- | --- | --- |
 | `list_models` | Discover configured models, guidance, and the default model | `{}` |
-| `generate_image` | Generate or edit images and save them locally | `{"prompt":"A watercolor mountain landscape"}` |
+| `generate_image` | Generate or edit images using the global output format | `{"prompt":"A watercolor mountain landscape"}` |
 
-`generate_image` also accepts `model`, `input_images`, and `timeout`. `size` and `quality` apply only to the Images route. Results include `model`, `route`, and each image's absolute `path`, `mime_type`, and `bytes`.
+`generate_image` also accepts `model`, `input_images`, and `timeout`. `size` and `quality` apply only to the Images route. Results include `model`, `route`, and each image's `mime_type`, `bytes`, and `path` and/or `base64` according to the global `output_format`.
 
 Inputs must be PNG/JPEG/WebP: at most 16 images, 32 MiB each, and 64 MiB total. `list_models` reads configured model entries; it does not query the relay.
 

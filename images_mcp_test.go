@@ -796,7 +796,7 @@ func TestModelDiscovery(t *testing.T) {
 	if generation == nil {
 		t.Fatal("generate_image missing")
 	}
-	wantDescription := "Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
+	wantDescription := "Generate or edit images through a unified relay. Output follows the global output_format configuration. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: alpha.\nConfigured models (alphabetical):\n- alpha: First model\n- gemini-middle: Chat model\n- gpt-image-zeta: Last model\nCall list_models for complete details and guidelines."
 	if generation.Description != wantDescription {
 		t.Fatalf("description = %q", generation.Description)
 	}
@@ -1226,6 +1226,184 @@ func TestGenerateTimeout(t *testing.T) {
 			entries, err := os.ReadDir(dir)
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("unexpected output: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+// TestOutputFormatConfig paths: omitted values use file; top-level > default >
+// environment; case normalizes; each nonempty invalid setting fails startup.
+// Cases exercise both YAML/JSON and ensure the resolved format is a snapshot.
+func TestOutputFormatConfig(t *testing.T) {
+	for _, ext := range []string{".yaml", ".json"} {
+		for _, tt := range []struct {
+			top, def, env, want string
+			invalid             bool
+		}{
+			{"", "", "", "file", false},
+			{"", "", "BASE64", "base64", false},
+			{"", "BoTh", "base64", "both", false},
+			{"FILE", "both", "base64", "file", false},
+			{"base64", "", "", "base64", false},
+			{"invalid", "", "", "", true},
+			{"file", "invalid", "", "", true},
+			{"", "", "invalid", "", true},
+		} {
+			t.Run(ext+"/"+tt.top+"/"+tt.def+"/"+tt.env, func(t *testing.T) {
+				t.Setenv("IMAGE_OUTPUT_FORMAT", tt.env)
+				path := filepath.Join(t.TempDir(), "config"+ext)
+				// JSON is also valid YAML, exercising both file decoders.
+				body, err := json.Marshal(fileConfig{OutputFormat: tt.top, Default: fileCredentials{OutputFormat: tt.def}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+				c, err := loadConfig(path)
+				if tt.invalid {
+					if err == nil || !strings.Contains(err.Error(), "output_format") && !strings.Contains(err.Error(), "IMAGE_OUTPUT_FORMAT") {
+						t.Fatalf("expected format error, got %v", err)
+					}
+					return
+				}
+				if err != nil || c.outputFormat != tt.want {
+					t.Fatalf("format %q, error %v; want %q", c.outputFormat, err, tt.want)
+				}
+				t.Setenv("IMAGE_OUTPUT_FORMAT", "file")
+				if c.outputFormat != tt.want {
+					t.Fatal("format changed after startup")
+				}
+			})
+		}
+	}
+}
+
+// TestOutputFormats paths: file writes only, base64 encodes only, both does both.
+// Inline and URL results preserve exact bytes; base64 cannot create output_dir.
+// MCP calls must carry structured JSON and text plus native images when enabled.
+func TestOutputFormats(t *testing.T) {
+	raw, err := base64.StdEncoding.DecodeString(testPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(raw)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"b64_json": testPNG}}})
+	}))
+	defer relay.Close()
+	for _, format := range []string{"file", "base64", "both"} {
+		t.Run(format, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "output")
+			s := &service{config: config{baseURL: relay.URL, apiKey: "key", outputDir: dir, outputFormat: format}, client: relay.Client()}
+			for _, ref := range []string{testPNG, relay.URL + "/image"} {
+				img, err := s.saveImage(context.Background(), ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if img.Bytes != len(raw) || img.MIMEType != "image/png" {
+					t.Fatalf("bad metadata: %+v", img)
+				}
+				if format == "base64" {
+					if img.Path != "" {
+						t.Fatal("base64 returned a path")
+					}
+					if _, err := os.Stat(dir); !os.IsNotExist(err) {
+						t.Fatalf("base64 created directory: %v", err)
+					}
+				} else {
+					got, err := os.ReadFile(img.Path)
+					if err != nil || !bytes.Equal(got, raw) || !filepath.IsAbs(img.Path) {
+						t.Fatalf("bad file %q: %v", img.Path, err)
+					}
+				}
+				if format == "file" {
+					if img.Base64 != "" {
+						t.Fatal("file returned base64")
+					}
+				} else {
+					got, err := base64.StdEncoding.DecodeString(img.Base64)
+					if err != nil || !bytes.Equal(got, raw) {
+						t.Fatalf("bad base64: %v", err)
+					}
+				}
+			}
+			if format == "base64" {
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				sentinel := filepath.Join(dir, "keep")
+				if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.saveImage(context.Background(), testPNG); err != nil {
+					t.Fatal(err)
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 1 || entries[0].Name() != "keep" {
+					t.Fatalf("directory changed: %v %v", entries, err)
+				}
+				if err := os.Remove(sentinel); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := context.Background()
+			a, b := mcp.NewInMemoryTransports()
+			session, err := newServer(s).Connect(ctx, a, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+			cs, err := client.Connect(ctx, b, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+			result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-2", "prompt": "draw"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError || result.StructuredContent == nil {
+				t.Fatalf("invalid result: %+v", result)
+			}
+			images, texts := 0, 0
+			for _, content := range result.Content {
+				switch content := content.(type) {
+				case *mcp.ImageContent:
+					images++
+					if content.MIMEType != "image/png" || !bytes.Equal(content.Data, raw) {
+						t.Fatal("native image differs")
+					}
+				case *mcp.TextContent:
+					texts++
+					var out generateOutput
+					if err := json.Unmarshal([]byte(content.Text), &out); err != nil || len(out.Images) != 1 {
+						t.Fatalf("invalid text: %v", err)
+					}
+					if format == "base64" && (out.Images[0].Path != "" || out.Images[0].Base64 != testPNG) {
+						t.Fatal("invalid text metadata")
+					}
+				}
+			}
+			wantImages := 1
+			if format == "file" {
+				wantImages = 0
+			}
+			if images != wantImages || texts != 1 {
+				t.Fatalf("images=%d texts=%d", images, texts)
+			}
+			if format == "base64" {
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatal("MCP base64 wrote output directory")
+				}
 			}
 		})
 	}

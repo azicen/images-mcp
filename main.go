@@ -51,11 +51,12 @@ func (in generateInput) normalizedInputImages() ([]inputImageSource, error) {
 type credentials struct{ baseURL, apiKey string }
 
 type fileCredentials struct {
-	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	API     string `json:"api,omitempty" yaml:"api,omitempty"`
-	APIType string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
-	BaseURL string `json:"base_url" yaml:"base_url"`
-	APIKey  string `json:"api_key" yaml:"api_key"`
+	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"`
+	Timeout      string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	API          string `json:"api,omitempty" yaml:"api,omitempty"`
+	APIType      string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
+	BaseURL      string `json:"base_url" yaml:"base_url"`
+	APIKey       string `json:"api_key" yaml:"api_key"`
 }
 
 type fileModel struct {
@@ -69,6 +70,7 @@ type fileModel struct {
 }
 
 type fileConfig struct {
+	OutputFormat string                     `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 	Timeout      string                     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	DefaultModel string                     `json:"default_model" yaml:"default_model"`
 	Default      fileCredentials            `json:"default" yaml:"default"`
@@ -150,6 +152,7 @@ func loadFileConfig(path string) (fileConfig, error) {
 
 type config struct {
 	baseURL, apiKey, outputDir string
+	outputFormat               string
 	gemini, gptImage           credentials
 	file                       fileConfig
 }
@@ -184,9 +187,32 @@ func loadConfig(paths ...string) (config, error) {
 			return config{}, fmt.Errorf("model %q: configure api or api_type for an unrecognized model prefix", name)
 		}
 	}
+	outputFormat := "file"
+	for _, setting := range []struct{ name, value string }{
+		{"output_format", file.OutputFormat},
+		{"default.output_format", file.Default.OutputFormat},
+		{"IMAGE_OUTPUT_FORMAT", os.Getenv("IMAGE_OUTPUT_FORMAT")},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		value := strings.ToLower(setting.value)
+		switch value {
+		case "file", "base64", "both":
+		default:
+			return config{}, fmt.Errorf("%s: expected file, base64, or both", setting.name)
+		}
+	}
+	for _, value := range []string{file.OutputFormat, file.Default.OutputFormat, os.Getenv("IMAGE_OUTPUT_FORMAT")} {
+		if value != "" {
+			outputFormat = strings.ToLower(value)
+			break
+		}
+	}
 	c := config{
-		file:    file,
-		baseURL: os.Getenv("OPENAI_BASE_URL"), apiKey: os.Getenv("OPENAI_API_KEY"),
+		file:         file,
+		outputFormat: outputFormat,
+		baseURL:      os.Getenv("OPENAI_BASE_URL"), apiKey: os.Getenv("OPENAI_API_KEY"),
 		gemini:    credentials{os.Getenv("GEMINI_BASE_URL"), os.Getenv("GEMINI_API_KEY")},
 		gptImage:  credentials{os.Getenv("GPT_IMAGE_BASE_URL"), os.Getenv("GPT_IMAGE_API_KEY")},
 		outputDir: os.Getenv("IMAGE_OUTPUT_DIR"),
@@ -316,7 +342,7 @@ func (c config) listModels() ([]modelRecord, error) {
 
 func (c config) generationDescription() string {
 	var b strings.Builder
-	b.WriteString("Generate or edit images through a unified relay and save them locally. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: ")
+	b.WriteString("Generate or edit images through a unified relay. Output follows the global output_format configuration. Supply input_images for up to 16 ordered images: first is the primary image to edit, others are style/context references. Inputs: PNG/JPEG/WebP, 32 MiB each, 64 MiB total.\nDefault model: ")
 	if c.file.DefaultModel == "" {
 		b.WriteString("none (supply model)")
 	} else {
@@ -334,10 +360,25 @@ func (c config) generationDescription() string {
 }
 
 func newServer(s *service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.1.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.1.2"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
-		return &mcp.CallToolResult{}, out, err
+		result := &mcp.CallToolResult{}
+		if err == nil {
+			if s.config.outputFormat == "base64" || s.config.outputFormat == "both" {
+				data, marshalErr := json.Marshal(out)
+				if marshalErr != nil {
+					return nil, out, marshalErr
+				}
+				result.Content = append(result.Content, &mcp.TextContent{Text: string(data)})
+			}
+			for _, img := range out.Images {
+				if img.Base64 != "" {
+					result.Content = append(result.Content, &mcp.ImageContent{Data: img.data, MIMEType: img.MIMEType})
+				}
+			}
+		}
+		return result, out, err
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		records, err := s.config.listModels()

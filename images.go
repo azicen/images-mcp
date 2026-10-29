@@ -251,6 +251,14 @@ func (s *service) saveImage(ctx context.Context, ref string) (imageMetadata, err
 	if err := ctx.Err(); err != nil {
 		return imageMetadata{}, err
 	}
+	metadata := imageMetadata{MIMEType: mimeType, Bytes: len(b)}
+	if s.config.outputFormat == "base64" || s.config.outputFormat == "both" {
+		metadata.Base64 = base64.StdEncoding.EncodeToString(b)
+		metadata.data = b
+	}
+	if s.config.outputFormat == "base64" {
+		return metadata, nil
+	}
 	if err := os.MkdirAll(s.config.outputDir, 0700); err != nil {
 		return imageMetadata{}, fmt.Errorf("create output directory: %w", err)
 	}
@@ -275,5 +283,6 @@ func (s *service) saveImage(ctx context.Context, ref string) (imageMetadata, err
 		}
 		return imageMetadata{}, fmt.Errorf("close image: %w", closeErr)
 	}
-	return imageMetadata{Path: path, MIMEType: mimeType, Bytes: len(b)}, nil
+	metadata.Path = path
+	return metadata, nil
 }

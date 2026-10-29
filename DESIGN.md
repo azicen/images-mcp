@@ -13,7 +13,7 @@ The official github.com/modelcontextprotocol/go-sdk v1.8.0 registers generate_im
 
 API values are case-insensitive. Nonempty tool API arguments override the exact model configuration entry, and explicit selection overrides model prefixes. Empty strings mean unspecified. Invalid API values and aliases selecting different routes fail clearly; invalid model API configuration fails startup. Equivalent aliases may be supplied together.
 
-* Unknown model families without explicit API selection fail before network I/O. No automatic retries: generation may incur charges. Requests propagate MCP cancellation and use a five-minute HTTP timeout.
+* Unknown model families without explicit API selection fail before network I/O. No automatic retries: generation may incur charges. Requests propagate MCP cancellation and use a configurable shared context deadline. The HTTP client has Timeout: 0, with no fixed client timeout.
 
 The base URL may be an origin or include a /v1 suffix (including a relay path prefix); endpoint construction adds /v1 only when absent. Authorization is attached only to relay requests, never image downloads. Redirects must not forward relay credentials to another origin.
 
@@ -98,3 +98,27 @@ The shared input loader in images.go enforces 32 MiB per image and `maxTotalInpu
 In relay.go, GPT Image sends multipart POST /v1/images/edits: one input uses `name="image"`; multiple inputs all use `name="image[]"`. Each file part has a generated filename with detected extension and its own Content-Type. Gemini sends POST /v1/chat/completions: user content starts with the prompt text part, followed by ordered image_url parts using detected MIME and standard base64 Data URIs.
 
 Tests cover single-image arrays, repeated multi-image fields and bytes, ordered Gemini parts, count limits, rejected MIME, indexed errors, exact aggregate budget and overflow, and output GIF preservation. Run `go test -race -cover ./...`, `go vet ./...`, and `go build -o bin/images-mcp .`.
+
+
+## Request timeout
+
+`generateInput.Timeout` is exposed as the optional `timeout` string argument.
+`fileConfig.Timeout`, `fileCredentials.Timeout` (under `default`), and
+`fileModel.Timeout` accept the same string in YAML and JSON.
+
+Resolution: request `timeout` > exact `models.<id>.timeout` >
+`default.timeout` > top-level `timeout` > `IMAGE_TIMEOUT` > `10m`.
+The default model is selected before resolving its timeout. Family timeout
+settings do not participate. Empty strings fall through; an invalid selected
+value fails without fallback. `parseTimeout` accepts positive Go durations
+(`10m`, `15m`, `600s`, `1h`) and integer seconds strings (`"600"`),
+rejecting zero, negative values, malformed values, and duration overflow.
+Startup validates all nonempty top-level, default, and model timeout settings.
+The environment value is validated when selected for a request.
+
+`service.generate` creates one `context.WithTimeout` and defers cancellation
+before preparing the request. This shared budget covers input downloads,
+relay POST and response reading, and output downloads and saving, rather than
+resetting for each stage. Existing context checks guard local saves; local
+filesystem system calls are synchronous and cannot be interrupted mid-call.
+An earlier parent deadline or MCP cancellation remains effective.

@@ -214,6 +214,12 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	if err != nil {
 		return out, err
 	}
+	timeout, err := s.config.resolveTimeout(in)
+	if err != nil {
+		return out, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, endpoint, err := s.request(ctx, in)
 	if err != nil {
 		return out, err

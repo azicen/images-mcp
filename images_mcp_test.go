@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -1059,5 +1061,172 @@ func TestInputImageBudget(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "input_images[2]") || !strings.Contains(err.Error(), "64 MiB") {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestParseTimeout covers duration and integer-seconds paths, whitespace,
+// parse failures, overflow, and the nonpositive branch; only positive values succeed.
+func TestParseTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  time.Duration
+	}{
+		{"10m", 10 * time.Minute}, {"15m", 15 * time.Minute},
+		{"600s", 10 * time.Minute}, {"600", 10 * time.Minute},
+		{"1h", time.Hour}, {" 10ms ", 10 * time.Millisecond},
+		{"", 0}, {" ", 0}, {"invalid", 0}, {"0", 0}, {"0s", 0},
+		{"-1s", 0}, {"-600", 0}, {"999999999999999999999", 0},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseTimeout(tt.input)
+			if got != tt.want || (err != nil) != (tt.want == 0) {
+				t.Fatalf("parseTimeout(%q) = %v, %v; want %v", tt.input, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestTimeoutPriority removes each winning value in order, exercising all six
+// paths. Invalid winners fail without fallback; an omitted model uses default_model.
+func TestTimeoutPriority(t *testing.T) {
+	t.Setenv("IMAGE_TIMEOUT", "5m")
+	c := config{file: fileConfig{Timeout: "4m", DefaultModel: "gpt-image-test",
+		Default: fileCredentials{Timeout: "3m"},
+		Models:  map[string]fileModel{"gpt-image-test": {Timeout: "2m"}}}}
+	in := generateInput{Timeout: "1m"}
+	for i := 1; i <= 6; i++ {
+		want := time.Duration(i) * time.Minute
+		if i == 6 {
+			want = 10 * time.Minute
+		}
+		got, err := c.resolveTimeout(in)
+		if err != nil || got != want {
+			t.Fatalf("level %d: %v, %v; want %v", i, got, err, want)
+		}
+		switch i {
+		case 1:
+			in.Timeout = ""
+		case 2:
+			c.file.Models = nil
+		case 3:
+			c.file.Default.Timeout = ""
+		case 4:
+			c.file.Timeout = ""
+		case 5:
+			t.Setenv("IMAGE_TIMEOUT", "")
+		}
+	}
+	for _, level := range []string{"request", "model", "default", "top", "env"} {
+		t.Run(level, func(t *testing.T) {
+			c := config{file: fileConfig{Models: map[string]fileModel{}}}
+			in := generateInput{Model: "gpt-image-test"}
+			t.Setenv("IMAGE_TIMEOUT", "10m")
+			switch level {
+			case "request":
+				in.Timeout = "bad"
+			case "model":
+				c.file.Models[in.Model] = fileModel{Timeout: "bad"}
+			case "default":
+				c.file.Default.Timeout = "bad"
+			case "top":
+				c.file.Timeout = "bad"
+			case "env":
+				t.Setenv("IMAGE_TIMEOUT", "bad")
+			}
+			if _, err := c.resolveTimeout(in); err == nil {
+				t.Fatal("invalid winner accepted")
+			}
+		})
+	}
+}
+
+// TestTimeoutConfigValidation covers YAML and JSON decoding at each supported
+// scope: valid durations start successfully; invalid/nonpositive ones fail startup.
+func TestTimeoutConfigValidation(t *testing.T) {
+	for _, ext := range []string{".yaml", ".json"} {
+		for _, scope := range []string{"top", "default", "model"} {
+			for _, value := range []string{"15m", "bad", "0"} {
+				t.Run(ext+scope+value, func(t *testing.T) {
+					file := fileConfig{Models: map[string]fileModel{"gpt-image-test": {}}}
+					switch scope {
+					case "top":
+						file.Timeout = value
+					case "default":
+						file.Default.Timeout = value
+					case "model":
+						file.Models["gpt-image-test"] = fileModel{Timeout: value}
+					}
+					// JSON is also valid YAML, so exercise both decoders with identical content.
+					body, err := json.Marshal(file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(t.TempDir(), "config"+ext)
+					if err := os.WriteFile(path, body, 0600); err != nil {
+						t.Fatal(err)
+					}
+					c, err := loadConfig(path)
+					if (err != nil) != (value != "15m") {
+						t.Fatalf("loadConfig: %v", err)
+					}
+					if err == nil {
+						got, err := c.resolveTimeout(generateInput{Model: "gpt-image-test"})
+						if err != nil || got != 15*time.Minute {
+							t.Fatalf("decoded timeout: %v, %v", got, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestGenerateTimeout covers cancellation at input download, relay POST, and
+// output download. Each stalled HTTP handler waits for cancellation; errors
+// must retain context.DeadlineExceeded and leave the output directory empty.
+// Invalid request durations fail before I/O; an earlier parent deadline wins.
+func TestGenerateTimeout(t *testing.T) {
+	for _, stage := range []string{"input", "relay", "output", "parent", "invalid"} {
+		t.Run(stage, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if stage == "output" && r.Method == http.MethodPost {
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"url": "http://" + r.Host + "/output"}}})
+					return
+				}
+				select {
+				case <-r.Context().Done():
+				case <-time.After(time.Second):
+				}
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			s := service{config: config{baseURL: server.URL, apiKey: "key", outputDir: dir}, client: server.Client()}
+			in := generateInput{Model: "gpt-image-test", Prompt: "draw", Timeout: "10ms"}
+			if stage == "input" {
+				in.InputImages = []string{server.URL + "/input"}
+			}
+			ctx := context.Background()
+			if stage == "parent" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+				in.Timeout = "1h"
+			}
+			if stage == "invalid" {
+				in.Timeout = "bad"
+			}
+			_, err := s.generate(ctx, in)
+			if stage == "invalid" {
+				if err == nil || !strings.Contains(err.Error(), "request timeout") {
+					t.Fatalf("invalid timeout: %v", err)
+				}
+			} else if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected deadline exceeded: %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("unexpected output: %v, %v", entries, err)
+			}
+		})
 	}
 }

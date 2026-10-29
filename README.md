@@ -68,6 +68,9 @@ args = ["-config", "/absolute/path/to/images-mcp.yaml"]
 # 默认模型：当请求未传入 model 或为空时使用
 default_model: gemini-3.1-flash-image
 
+# 整个生成请求的全局超时，支持 Go duration 或纯秒数字符串
+timeout: 10m
+
 # 图像保存输出目录：留空时优先读取 IMAGE_OUTPUT_DIR 环境变量，未设置则使用系统临时目录
 output_dir: ""
 
@@ -93,6 +96,7 @@ models:
 
   gpt-image-2.5-sunburst:
     api: images
+    timeout: 15m  # 适合耗时长的高精度精修
     description: 细节与光影最强，适合高精终稿与复杂精修。
     notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
 
@@ -120,6 +124,7 @@ families:
 | 字段 | 说明 |
 | --- | --- |
 | `default_model` | 请求未传 `model` 或传入空字符串时使用。未配置且请求也未指定模型时返回错误。显式模型参数优先。 |
+| `timeout` / `default.timeout` / `models.<id>.timeout` | 可选，正数 Go duration 或纯秒数字符串，如 `10m`、`15m`、`600s`、`"600"`。配置格式非法时启动报错。 |
 | `output_dir` | 输出目录。优先级为配置文件 > `IMAGE_OUTPUT_DIR` > `os.TempDir()`；Linux 通常为 `/tmp`，实际由系统临时目录设置决定。配置和环境变量均为空时使用该默认值。相对路径基于服务工作目录解析，最终返回绝对路径。 |
 | `default` | 全局默认 `base_url` 和 `api_key`。 |
 | `models` | 按**区分大小写的精确模型 ID**配置路由、凭据及发现信息。可覆盖 `base_url`、`api_key`。 |
@@ -159,6 +164,17 @@ Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 
 
 空值或仅含空白的凭据字段会继续向下查找；仅覆盖一个字段不会改变另一个字段的来源。最终选中的非空值若无效则返回错误，不再继续回退。`base_url` 必须是无内嵌凭据、查询参数或片段的 HTTP(S) URL；`api_key` 必须是非空、无空白的可打印 ASCII token。
 
+## 超时时间解析优先级
+
+1. 请求参数 `timeout`。
+2. 精确模型配置 `models.<id>.timeout`（包括选中的默认模型）。
+3. 全局默认配置 `default.timeout`。
+4. 顶层配置 `timeout`。
+5. 环境变量 `IMAGE_TIMEOUT`。
+6. 内置缺省值 `10m`。
+
+空字符串继续向下查找；选中的非空值非法或非正数时返回错误，不再回退。支持 Go duration（`10m`、`15m`、`600s`、`1h`）及纯秒数字符串（`"600"`），家族配置不参与解析。同一个超时 context 覆盖输入图片下载、中转 POST、输出图片下载与保存；调用方更早的截止时间仍然生效。HTTP 客户端不再设置固定超时。
+
 ## 暴露的 MCP 工具
 
 ### generate_image
@@ -172,6 +188,7 @@ Gemini 路由会从聊天响应文本（Markdown 图像、URL、data URI 或纯 
 | `input_images` | 可选，有序参考图数组；忽略空白项，第一张为主图，后续为风格/上下文参考图。 |
 | `api` / `api_type` | 可选，覆盖模型配置的协议路由。 |
 | `base_url` / `api_key` | 可选，覆盖本次请求的凭据。 |
+| `timeout` | 可选，本次请求的超时，如 `15m` 或 `"600"`；覆盖模型及全局默认值。 |
 | `size` / `quality` | 可选，仅 Images 路由支持。 |
 
 使用默认模型：

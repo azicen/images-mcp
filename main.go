@@ -22,6 +22,7 @@ import (
 )
 
 type generateInput struct {
+	Timeout     string   `json:"timeout,omitempty" jsonschema:"Optional request timeout duration (e.g. 10m, 15m, 600s); overrides model and config defaults"`
 	API         string   `json:"api,omitempty" jsonschema:"Optional API route: gemini or chat; gpt, gpt-image or images; overrides model configuration"`
 	APIType     string   `json:"api_type,omitempty" jsonschema:"Alias for api"`
 	BaseURL     string   `json:"base_url,omitempty" jsonschema:"Optional relay base URL; overrides model family and OPENAI_BASE_URL defaults"`
@@ -50,6 +51,7 @@ func (in generateInput) normalizedInputImages() ([]inputImageSource, error) {
 type credentials struct{ baseURL, apiKey string }
 
 type fileCredentials struct {
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	API     string `json:"api,omitempty" yaml:"api,omitempty"`
 	APIType string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
 	BaseURL string `json:"base_url" yaml:"base_url"`
@@ -57,6 +59,7 @@ type fileCredentials struct {
 }
 
 type fileModel struct {
+	Timeout     string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	API         string `json:"api,omitempty" yaml:"api,omitempty"`
 	APIType     string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
 	BaseURL     string `json:"base_url" yaml:"base_url"`
@@ -66,6 +69,7 @@ type fileModel struct {
 }
 
 type fileConfig struct {
+	Timeout      string                     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	DefaultModel string                     `json:"default_model" yaml:"default_model"`
 	Default      fileCredentials            `json:"default" yaml:"default"`
 	Families     map[string]fileCredentials `json:"families" yaml:"families"`
@@ -159,7 +163,21 @@ func loadConfig(paths ...string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	for name := range file.Models {
+	for _, setting := range []struct{ name, value string }{
+		{"timeout", file.Timeout}, {"default.timeout", file.Default.Timeout},
+	} {
+		if setting.value != "" {
+			if _, err := parseTimeout(setting.value); err != nil {
+				return config{}, fmt.Errorf("%s: %w", setting.name, err)
+			}
+		}
+	}
+	for name, model := range file.Models {
+		if model.Timeout != "" {
+			if _, err := parseTimeout(model.Timeout); err != nil {
+				return config{}, fmt.Errorf("model %q timeout: %w", name, err)
+			}
+		}
 		if family, err := (config{file: file}).modelFamily(generateInput{Model: name}); err != nil {
 			return config{}, fmt.Errorf("model %q: %w", name, err)
 		} else if family == "" {
@@ -184,6 +202,45 @@ func loadConfig(paths ...string) (config, error) {
 		return c, fmt.Errorf("resolve output directory: %w", err)
 	}
 	return c, nil
+}
+
+// parseTimeout accepts Go durations and integer seconds without overflowing.
+func parseTimeout(s string) (time.Duration, error) {
+	value := strings.TrimSpace(s)
+	if value != "" && strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		value += "s"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout %q: expected a positive Go duration (e.g. 10m) or integer seconds: %w", s, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("invalid timeout %q: must be greater than zero", s)
+	}
+	return duration, nil
+}
+
+func (c config) resolveTimeout(in generateInput) (time.Duration, error) {
+	model := in.Model
+	if model == "" {
+		model = c.file.DefaultModel
+	}
+	for _, setting := range []struct{ name, value string }{
+		{"request timeout", in.Timeout},
+		{"model timeout", c.file.Models[model].Timeout},
+		{"default.timeout", c.file.Default.Timeout},
+		{"timeout", c.file.Timeout},
+		{"IMAGE_TIMEOUT", os.Getenv("IMAGE_TIMEOUT")},
+	} {
+		if setting.value != "" {
+			duration, err := parseTimeout(setting.value)
+			if err != nil {
+				return 0, fmt.Errorf("%s: %w", setting.name, err)
+			}
+			return duration, nil
+		}
+	}
+	return 10 * time.Minute, nil
 }
 
 func (c config) resolveCredentials(in generateInput) (credentials, error) {
@@ -308,7 +365,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	client := &http.Client{Timeout: 0, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}

@@ -68,6 +68,9 @@ When using `go install`, set `command` to the absolute path of the installed bin
 # 默认模型：当请求未传入 model 或为空时使用
 default_model: gemini-3.1-flash-image
 
+# Global timeout for the entire generation request (Go duration or integer seconds).
+timeout: 10m
+
 # 图像保存输出目录：留空时优先读取 IMAGE_OUTPUT_DIR 环境变量，未设置则使用系统临时目录
 output_dir: ""
 
@@ -93,6 +96,7 @@ models:
 
   gpt-image-2.5-sunburst:
     api: images
+    timeout: 15m  # Allow more time for detailed refinement.
     description: 细节与光影最强，适合高精终稿与复杂精修。
     notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
 
@@ -120,6 +124,7 @@ Replace the example model IDs with names supported by your relay.
 | Field | Description |
 | --- | --- |
 | `default_model` | Used when a request omits `model` or supplies an empty string. If neither is available, the call returns an error. An explicit model takes precedence. |
+| `timeout` / `default.timeout` / `models.<id>.timeout` | Optional positive Go duration or integer seconds string, e.g. `10m`, `15m`, `600s`, `"600"`. Invalid configured values prevent startup. |
 | `output_dir` | Output directory. Priority: configuration file > `IMAGE_OUTPUT_DIR` > `os.TempDir()`. On Linux, the latter is usually `/tmp`, subject to the system temporary-directory settings. Empty file and environment values use this default. Relative paths resolve from the server's working directory; returned paths are absolute. |
 | `default` | Global default `base_url` and `api_key`. |
 | `models` | Routing, credentials, and discovery information keyed by **exact, case-sensitive model IDs**. Entries can override `base_url` and `api_key`. |
@@ -159,6 +164,17 @@ Both routes accept local paths, HTTP(S) URLs, image Data URIs, and raw base64 th
 
 Empty or whitespace-only credential fields fall through. Overriding one field does not change the source of the other. An invalid nonempty winning value returns an error without further fallback. `base_url` must be an HTTP(S) URL without embedded credentials, query parameters, or fragments; `api_key` must be a nonempty printable ASCII token without whitespace.
 
+## Timeout resolution priority
+
+1. Request argument `timeout`.
+2. Exact model configuration `models.<id>.timeout` (including the selected default model).
+3. Global default `default.timeout`.
+4. Top-level `timeout`.
+5. Environment variable `IMAGE_TIMEOUT`.
+6. Built-in default: `10m`.
+
+Empty strings fall through. A nonempty invalid or nonpositive winning value returns an error without fallback. Supports Go durations (`10m`, `15m`, `600s`, `1h`) and integer seconds strings (`"600"`). Family settings do not participate. One shared deadline covers input downloads, the relay POST, and output downloads and saving; an earlier caller deadline still applies. The HTTP client has no fixed timeout.
+
 ## Exposed MCP tools
 
 ### generate_image
@@ -172,6 +188,7 @@ Generates or edits images through a unified interface. The SDK automatically der
 | `input_images` | Optional ordered image array; blank entries are ignored. First image is primary; remaining images are style/context references. |
 | `api` / `api_type` | Optional protocol route override for the model configuration. |
 | `base_url` / `api_key` | Optional credential overrides for this request. |
+| `timeout` | Optional request timeout, e.g. `15m` or `"600"`; overrides model and global defaults. |
 | `size` / `quality` | Optional; supported only on the Images route. |
 
 Use the default model:

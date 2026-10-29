@@ -62,28 +62,49 @@ args = ["-config", "/absolute/path/to/images-mcp.yaml"]
 ## 配置文件详解 (images-mcp.yaml)
 
 ```yaml
+# images-mcp 配置文件
+# 文档与说明参考: https://github.com/azicen/images-mcp
+
+# 默认模型：当请求未传入 model 或为空时使用
 default_model: gemini-3.1-flash-image
+
+# 图像保存输出目录：留空时优先读取 IMAGE_OUTPUT_DIR 环境变量，未设置则使用系统临时目录
 output_dir: ""
 
+# 全局默认中转服务地址与 API Key（按需修改）
 default:
   base_url: https://relay.example/v1
   api_key: your-default-api-key
 
+# 精确模型配置与路由说明（会被 list_models 返回并用于智能体提示）
+# api 可选:
+#   - chat (Gemini 聊天补全路由, 支持文生图与基于 input_images 的多模态图生图)
+#   - images (GPT Image 路由, 支持文生图与 multipart 图生图/编辑)
 models:
   gemini-3.1-flash-image:
     api: chat
-    description: 通过 Gemini 聊天接口生成和编辑图像。
-    notes: |
-      编辑时传入 input_images；第一张为主图，后续为风格/上下文参考图。
-      此路由不接受 size 或 quality。
-  custom-image-model:
+    description: 速度快成本低，擅长文字渲染、多图融合与角色一致。
+    notes: 极速高性价比；画面排版与文字渲染精准；擅长多图融合与保持角色一致。
+
+  gpt-image-2.5-flare:
     api: images
-    description: 使用 Images API 的自定义图像模型。
-    notes: |
-      传入 input_images时使用 multipart 图像编辑接口。
-      size 和 quality 的可用值取决于中转服务。
-    base_url: https://custom-relay.example/v1
-    api_key: your-model-api-key
+    description: 极速日常首选，生成快画质高，局部修改精准不走样。
+    notes: 速度与画质兼备；局部修图（换衣服、改背景等）对原主体和构图保留最忠实。
+
+  gpt-image-2.5-sunburst:
+    api: images
+    description: 细节与光影最强，适合高精终稿与复杂精修。
+    notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
+
+  gpt-image-2.5:
+    api: images
+    description: 标准通用款，光影自然，支持透明背景。
+    notes: 质感自然无塑料感，支持透明背景与常规图文编辑。
+
+  gpt-image-2:
+    api: images
+    description: 出图快成本低，适合大批量草稿与缩略图。
+    notes: 成本低，适合初期灵感探索与大批量出草图。
 
 families:
   gemini:

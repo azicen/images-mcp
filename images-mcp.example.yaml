@@ -1,53 +1,47 @@
-# Copy to images-mcp.yaml, replace the placeholder endpoints and keys, then start
-# images-mcp in that directory or pass -config /absolute/path/to/images-mcp.yaml.
-# Model availability and supported options depend on your relay.
+# images-mcp 配置文件
+# 文档与说明参考: https://github.com/azicen/images-mcp
+
+# 默认模型：当请求未传入 model 或为空时使用
 default_model: gemini-3.1-flash-image
 
-# An empty string uses IMAGE_OUTPUT_DIR if set, otherwise the system temporary
-# directory (os.TempDir()). Relative paths resolve from the working directory.
+# 图像保存输出目录：留空时优先读取 IMAGE_OUTPUT_DIR 环境变量，未设置则使用系统临时目录
 output_dir: ""
 
-# Shared credentials used when no higher-priority override supplies a field.
+# 全局默认中转服务地址与 API Key（按需修改）
 default:
   base_url: https://relay.example/v1
   api_key: your-default-api-key
 
-# Exact, case-sensitive model IDs exposed by list_models.
-# api selects the route: chat (chat completions) or images (generation/edits).
-# api_type is an optional alias for api; if both are set, they must agree.
-# description is a short summary; notes provides detailed usage guidance.
+# 精确模型配置与路由说明（会被 list_models 返回并用于智能体提示）
+# api 可选:
+#   - chat (Gemini 聊天补全路由, 支持文生图与基于 input_images 的多模态图生图)
+#   - images (GPT Image 路由, 支持文生图与 multipart 图生图/编辑)
 models:
   gemini-3.1-flash-image:
     api: chat
-    description: Image generation and editing through Gemini chat completions.
-    notes: |
-      Supply input_images to edit: first is primary, later images are style/context references.
-      Up to 16 PNG/JPEG/WebP inputs, 32 MiB each and 64 MiB total.
-      The chat route does not accept size or quality arguments.
+    description: 速度快成本低，擅长文字渲染、多图融合与角色一致。
+    notes: 极速高性价比；画面排版与文字渲染精准；擅长多图融合与保持角色一致。
 
   gpt-image-2.5-flare:
     api: images
-    description: Image generation and editing through the Images API.
-    notes: |
-      Supply input_images for multipart image edits.
-      First image is primary; remaining images are style/context references.
-      Up to 16 PNG/JPEG/WebP inputs, 32 MiB each and 64 MiB total.
-      Use size and quality only with values supported by your relay.
+    description: 极速日常首选，生成快画质高，局部修改精准不走样。
+    notes: 速度与画质兼备；局部修图（换衣服、改背景等）对原主体和构图保留最忠实。
 
-  custom-nano-draw:
-    # Custom names require an explicit API because their prefix is unrecognized.
-    api: chat
-    description: Custom image model served by a dedicated compatible relay.
-    notes: |
-      Replace this ID with the exact model name accepted by your relay.
-      This chat model uses the gemini credential family unless overridden here.
-    base_url: https://custom-relay.example/v1
-    api_key: your-custom-model-api-key
+  gpt-image-2.5-sunburst:
+    api: images
+    description: 细节与光影最强，适合高精终稿与复杂精修。
+    notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
 
-# Family credentials are fallbacks for models without per-model overrides.
-# Each field resolves independently: request > model > file family > family
-# environment > file default > OPENAI environment. Empty credentials fall through.
-# Explicit API selection determines the family: chat -> gemini, images -> gpt-image.
+  gpt-image-2.5:
+    api: images
+    description: 标准通用款，光影自然，支持透明背景。
+    notes: 质感自然无塑料感，支持透明背景与常规图文编辑。
+
+  gpt-image-2:
+    api: images
+    description: 出图快成本低，适合大批量草稿与缩略图。
+    notes: 成本低，适合初期灵感探索与大批量出草图。
+
 families:
   gemini:
     base_url: https://gemini-relay.example/v1

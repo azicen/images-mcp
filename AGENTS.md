@@ -4,7 +4,7 @@
 
 ## 前置硬规则
 
-1. **绝对路径**：客户端 `command` 与 `-config` 参数必须使用绝对路径；禁止相对路径、`~` 和未展开的环境变量。stdio 子进程的 CWD 由宿主决定；相对路径可能导致找不到二进制或配置、秒退，并表现为 Agent 15s subprocess crash / 初始化超时。禁止依赖当前目录自动发现配置。
+1. **命令与配置路径**：客户端 `command` 优先使用可执行文件名 `"images-mcp"`，前提是其安装目录已加入客户端进程的 `PATH`；也可使用已验证的二进制绝对路径。严禁使用 `./bin/images-mcp` 等依赖当前工作目录（CWD）的相对路径。`-config` 参数仍必须使用绝对路径，禁止使用相对路径、`~` 或未展开的环境变量。stdio 子进程的 CWD 由宿主决定；相对路径可能导致找不到二进制或配置、秒退，并表现为 Agent 15s subprocess crash / 初始化超时。禁止依赖当前目录自动发现配置。
 2. **凭据安全**：禁止虚构、猜测 API Key，禁止将占位值当作真实凭据发送。缺失时提示用户提供或自行配置中转 URL、API Key 和可用模型 ID；继续执行不依赖凭据的安装与本地验证。禁止输出密钥或提交含密钥的配置文件。
 3. **显式协议**：所有配置模型（含自定义名称）必须声明 `api: chat` 或 `api: images`。禁止仅靠模型名前缀推断协议。
 4. **配置合并**：保留宿主已有 MCP 配置，只新增或更新 `images-mcp` 条目。修改服务或客户端配置后重启宿主客户端。
@@ -109,13 +109,20 @@ models:
 
 ## 步骤 3：注册 MCP 客户端
 
-将占位符替换为步骤 1、2 验证的实际绝对路径。将 JSON 合并到 Claude Code、Cursor、Cline、Roo Code 或 Hermes 的 MCP 服务配置中；以宿主实际支持的导入入口为准：
+`command` 支持两种写法：
+
+- **方式 A（优先推荐，简洁）**：使用 `"images-mcp"`。先将安装目录（通常为 `~/go/bin`，实际以步骤 1 为准）加入 `PATH`；Hermes、Claude Code、Codex 等从该 shell 启动的 CLI 客户端默认继承此环境，可直接使用命令名。可用 `command -v images-mcp`（或 `which images-mcp`）检查。
+- **方式 B（兼容备选）**：使用步骤 1 验证的二进制绝对路径 `<ABS_BIN>`。适用于未将 Go bin 纳入 `PATH`，或 macOS GUI 应用（如 Claude Desktop）从 Dock/Finder 启动、未继承包含 `~/go/bin` 的 shell `PATH` 的场景。
+
+严禁使用 `./bin/images-mcp` 等依赖 CWD 的相对路径。`-config` 参数始终必须使用绝对路径，因为子进程启动时的 CWD 不受控。将 `<ABS_CONFIG_DIR>` 替换为步骤 2 验证的实际绝对路径，不得在客户端中保留占位符、`~` 或未展开的环境变量。
+
+以下示例使用方式 A。将 JSON 合并到 Claude Code、Cursor、Cline、Roo Code 或 Hermes 的 MCP 服务配置中；以宿主实际支持的导入入口为准：
 
 ```json
 {
   "mcpServers": {
     "images-mcp": {
-      "command": "<ABS_BIN>",
+      "command": "images-mcp",
       "args": ["-config", "<ABS_CONFIG_DIR>/images-mcp.yaml"]
     }
   }
@@ -126,15 +133,17 @@ models:
 
 ```toml
 [mcp_servers.images-mcp]
-command = "<ABS_BIN>"
+command = "images-mcp"
 args = ["-config", "<ABS_CONFIG_DIR>/images-mcp.yaml"]
 ```
+
+使用方式 B 时，仅将上述 `command` 值替换为已验证的 `<ABS_BIN>` 实际绝对路径，`args` 保持绝对配置路径。
 
 重启宿主客户端；重新加载 MCP 工具列表。
 
 ## 步骤 4：验证服务与工具连通
 
-先执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`。使用 Python 3 进行有初始化握手的逐行 stdio JSON-RPC 验证；仅启动本地服务，不请求中转：
+使用方式 A 时，先在启动客户端的环境中执行 `command -v images-mcp`（或 `which images-mcp`），确认命中预期二进制。再执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`。使用 Python 3 进行有初始化握手的逐行 stdio JSON-RPC 验证；仅启动本地服务，不请求中转：
 
 ```sh
 python3 - "$ABS_BIN" "$ABS_CONFIG" <<'PY'
@@ -215,7 +224,7 @@ PY
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| 子进程秒退 / 15s 初始化超时 | 相对路径受宿主 CWD 影响；不可执行；配置不可读 | 执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`、`"$ABS_BIN" -h`；仅对已确认的安装二进制执行 `chmod u+x "$ABS_BIN"`；将客户端两处路径修正为绝对路径并重启。 |
+| 子进程秒退 / 15s 初始化超时 | 命令不在宿主 PATH 中；相对路径受宿主 CWD 影响；不可执行；配置不可读 | 在启动客户端的环境中执行 `command -v images-mcp`（或 `which images-mcp`）；若未找到，将安装目录加入 PATH，不想修改 PATH 时将 `command` 改为已验证的二进制绝对路径。执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`、`"$ABS_BIN" -h`；仅对已确认的安装二进制执行 `chmod u+x "$ABS_BIN"`；确保 `-config` 为绝对路径，移除依赖 CWD 的相对路径并重启客户端。 |
 | Unknown model family / unsupported model / 路由启动报错 | 自定义模型缺少显式协议或协议值无效 | 将对应 `models.<id>.api` 设为中转实际支持的 `chat` 或 `images`；移除冲突的 `api_type`；核对模型 ID；重启并调用 `list_models`。 |
 | 慢速模型请求超时 | 模型或请求预算不足；宿主更早取消 | 将 `models.<id>.timeout` 或请求 `timeout` 设为 `15m`；核对宿主工具调用超时；配置修改后重启。 |
 | 图片加载失败 | 输入格式或预算超限；文件不可读或 URL 不可访问 | 将输入转换为 PNG/JPEG/WebP；每张限制 32 MiB、每次合计 64 MiB、最多 16 张；修复报错中 `input_images[i]` 的路径或 URL；禁止只修改扩展名。 |

@@ -32,10 +32,17 @@ go install github.com/azicen/images-mcp@latest
 ### 3. 运行
 
 ```sh
-/absolute/path/to/images-mcp -config /absolute/path/to/images-mcp.yaml
+images-mcp -config /absolute/path/to/images-mcp.yaml
 ```
 
-这是 stdio 服务，由 MCP 客户端启动并通信。将上述二进制与参数注册到客户端，**两个路径均须为绝对路径**，然后重启客户端。Claude Code、Cursor、Cline、Roo Code、Hermes 的 JSON 和 Codex 的 TOML 配置见 [Agent 安装指南](AGENTS.md#步骤-3注册-mcp-客户端)。
+这是 stdio 服务，由 MCP 客户端启动并通信。注册到客户端时，`command` 支持两种写法：
+
+- **方式 A（优先推荐，简洁）**：填写 `"images-mcp"`，前提是安装目录（通常为 `~/go/bin`）已加入客户端进程的 `PATH`。Hermes、Claude Code、Codex 等从该 shell 启动的 CLI 客户端默认继承此环境。可用 `command -v images-mcp`（或 `which images-mcp`）检查。
+- **方式 B（兼容备选）**：填写二进制的绝对路径，如 `/absolute/path/to/images-mcp`。适用于未将 Go bin 纳入 `PATH`，或 macOS GUI 应用（如 Claude Desktop）从 Dock/Finder 启动、未继承包含 `~/go/bin` 的 shell `PATH` 的场景。
+
+**严禁**使用 `./bin/images-mcp` 等依赖当前工作目录（CWD）的相对路径。**`-config` 参数仍必须使用绝对路径**，因为子进程启动时的 CWD 不受控，相对路径可能导致找不到配置文件；客户端配置中不要使用 `~` 或未展开的环境变量。
+
+保存配置后重启客户端。Claude Code、Cursor、Cline、Roo Code、Hermes 的 JSON 和 Codex 的 TOML 配置见 [Agent 安装指南](AGENTS.md#步骤-3注册-mcp-客户端)。
 
 ## 推荐模型
 

@@ -32,10 +32,17 @@ Copy [images-mcp.example.yaml](images-mcp.example.yaml) to your configuration di
 ### 3. Run
 
 ```sh
-/absolute/path/to/images-mcp -config /absolute/path/to/images-mcp.yaml
+images-mcp -config /absolute/path/to/images-mcp.yaml
 ```
 
-This is a stdio server launched by your MCP client. Register the executable and arguments using **absolute paths for both files**, then restart the client. See [the Agent installation guide](AGENTS.md#步骤-3注册-mcp-客户端) for JSON configurations for Claude Code, Cursor, Cline, Roo Code, and Hermes, and TOML for Codex.
+This is a stdio server launched by your MCP client. The client's `command` supports two forms:
+
+- **Option A (recommended for simplicity)**: use `"images-mcp"`, provided its installation directory (usually `~/go/bin`) is in the client process's `PATH`. CLI clients such as Hermes, Claude Code, and Codex inherit this environment by default when launched from that shell. Check with `command -v images-mcp` (or `which images-mcp`).
+- **Option B (compatibility fallback)**: use the binary's absolute path, such as `/absolute/path/to/images-mcp`. Use this when Go bin is not in `PATH`, or when a macOS GUI app (such as Claude Desktop) launched from Dock/Finder does not inherit the shell `PATH` containing `~/go/bin`.
+
+**Never** use relative paths such as `./bin/images-mcp` that depend on the current working directory (CWD). **The `-config` argument must still be an absolute path**: the subprocess's startup CWD is uncontrolled, so a relative path may prevent it from finding the configuration file. Do not use `~` or unexpanded environment variables in client configuration paths.
+
+Save the configuration and restart the client. See [the Agent installation guide](AGENTS.md#步骤-3注册-mcp-客户端) for JSON configurations for Claude Code, Cursor, Cline, Roo Code, and Hermes, and TOML for Codex.
 
 ## Recommended models
 

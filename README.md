@@ -142,7 +142,7 @@ HTTP 的 `file` / `both` 必须配置 S3 bucket 和完整静态凭据，否则�
 
 ## Docker 部署
 
-镜像：`ghcr.io/azicen/images-mcp`，支持 `linux/amd64` 和 `linux/arm64`。版本发布后可拉取 `latest`，生产部署建议使用已发布的版本标签或摘要：
+镜像：`ghcr.io/azicen/images-mcp`，运行底包为 Debian Bookworm Slim（`debian:bookworm-slim`），支持 `linux/amd64` 和 `linux/arm64`。版本发布后可拉取 `latest`，生产部署建议使用已发布的版本标签或摘要：
 
 ```sh
 docker pull ghcr.io/azicen/images-mcp:latest

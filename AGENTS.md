@@ -263,7 +263,7 @@ HTTP 生成结果要求 `images[].url` 非空且无 `path`，URL 为配置的公
 
 ## Docker：Agent / 自动化部署模板
 
-使用 `ghcr.io/azicen/images-mcp:latest`（生产应固定已发布版本或摘要），支持 amd64/arm64。先准备已验证的主机绝对配置路径 `/etc/images-mcp/config.yaml`；若路径不同，替换下列挂载源。文件须可由 UID/GID `10001:10001` 读取，并只读挂载。模型 ID 需用户确认且显式声明 `api`；设置 `output_format: file`，清除所有遮蔽环境回退的占位凭据。不得将配置或密钥复制进镜像。
+使用 `ghcr.io/azicen/images-mcp:latest`（生产应固定已发布版本或摘要），运行底包为 Debian Bookworm Slim（`debian:bookworm-slim`），支持 amd64/arm64。先准备已验证的主机绝对配置路径 `/etc/images-mcp/config.yaml`；若路径不同，替换下列挂载源。文件须可由 UID/GID `10001:10001` 读取，并只读挂载。模型 ID 需用户确认且显式声明 `api`；设置 `output_format: file`，清除所有遮蔽环境回退的占位凭据。不得将配置或密钥复制进镜像。
 
 用户须事先安全配置真实的中转 URL/Key、独立强服务密钥、S3 桶及完整静态凭据；以下命令只继承环境，不提供假凭据。缺失时继续本地构建/语法验证，提示用户补齐后再启动，不猜测值：
 

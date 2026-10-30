@@ -142,7 +142,7 @@ HTTP `base64` output needs no S3 and writes nothing to disk. Stdio retains local
 
 ## Docker deployment
 
-The image `ghcr.io/azicen/images-mcp` supports `linux/amd64` and `linux/arm64`. After a release is published, pull `latest`; pin a published version or digest for production:
+The image `ghcr.io/azicen/images-mcp` uses Debian Bookworm Slim (`debian:bookworm-slim`) for runtime and supports `linux/amd64` and `linux/arm64`. After a release is published, pull `latest`; pin a published version or digest for production:
 
 ```sh
 docker pull ghcr.io/azicen/images-mcp:latest

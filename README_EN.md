@@ -2,7 +2,7 @@
 
 # images-mcp
 
-Generate and edit images through OpenAI-compatible relays, with local file or in-memory Base64 output. One Go binary connects to MCP clients over stdio.
+Generate and edit images through OpenAI-compatible relays, with local file or in-memory Base64 output. One Go binary connects to MCP clients over stdio or HTTP, with S3 URLs for HTTP file output.
 
 > 🤖 **Want an AI Agent to install and configure it for you?**
 > Send this prompt to your Agent:
@@ -103,3 +103,39 @@ Validate and build for development:
 go test -race -cover ./...
 go build -o bin/images-mcp .
 ```
+
+## HTTP transport and S3 output
+
+The default transport remains stdio. To enable the official Go SDK Streamable HTTP server, add this to your existing relay/model configuration:
+
+```yaml
+server:
+  transport: http
+  listen: "127.0.0.1:8080"
+  api_key: "" # inject a real service key with MCP_SERVER_KEY
+  enable_sse: false
+s3:
+  endpoint: https://storage.example
+  bucket: generated-images
+  region: us-east-1
+  access_key_id: "" # AWS_ACCESS_KEY_ID
+  secret_access_key: "" # AWS_SECRET_ACCESS_KEY
+  use_path_style: true
+  key_prefix: images
+  public_url_prefix: ""
+  presign_ttl: 24h
+```
+
+```sh
+images-mcp -config /absolute/path/to/images-mcp.yaml -http 127.0.0.1:8080
+```
+
+`-http` overrides transport and listen address; `-server-key` overrides the service access key. Otherwise configuration fields take precedence over `MCP_TRANSPORT`, `MCP_LISTEN`, and `MCP_SERVER_KEY` / `SERVER_API_KEY`. Prefer environment variables or private configuration files over putting secrets in command arguments.
+
+Connect to `http://127.0.0.1:8080/mcp`, or `/sse` when `enable_sse` is true. Send `Authorization: Bearer <service-key>` on every request, including SSE session POSTs. `X-API-Key` and `?api_key=` are also supported, in that priority order after Bearer. Missing/incorrect tokens return JSON 401. An empty service key disables authentication. Configure a strong key and HTTPS at your reverse proxy for public deployments; prefer headers since query tokens may appear in logs. `/healthz` is unauthenticated and returns `{"status":"ok"}`. Request bodies are limited to 96 MiB.
+
+HTTP `file` / `both` output requires an S3 bucket and complete static credentials. Invalid or missing storage configuration fails before listening. Create the bucket first and allow PutObject, GetObject, and DeleteObject. MinIO, RustFS, R2, and AWS S3 are supported: specify an endpoint for custom services, omit it for AWS, and generally use region `auto` for R2. Environment fallbacks: `S3_ENDPOINT` / `AWS_ENDPOINT_URL_S3`, `S3_BUCKET`, `S3_REGION` / `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `S3_USE_PATH_STYLE`, and `S3_PUBLIC_URL_PREFIX`. An explicit `use_path_style: false` overrides the environment.
+
+Objects use `{key_prefix}/YYYY/MM/DD/{random_hex}{ext}` and the detected image Content-Type. Results contain `images[].url` and omit `path`. A configured public URL prefix is joined with the object key; otherwise the server creates a presigned GET URL, valid for 24h by default (`presign_ttl`, positive Go duration up to 168h). Temporary credentials can expire earlier. Public/CDN access must already be configured; the server does not change bucket policies. `both` also returns Base64 and native MCP image content. Failed multi-image calls attempt to delete objects uploaded by that call and report cleanup failures. Configure bucket lifecycle policies for successful objects.
+
+HTTP `base64` output needs no S3 and writes nothing to disk. Stdio retains local absolute paths. Restart the server and client connections after configuration changes. `list_models` does not validate relay or S3 credentials; only authorized generation tasks perform real uploads. See the [complete configuration template](images-mcp.example.yaml) for all fields.

@@ -70,6 +70,8 @@ type fileModel struct {
 }
 
 type fileConfig struct {
+	Server       serverConfig               `json:"server,omitempty" yaml:"server,omitempty"`
+	S3           s3Config                   `json:"s3,omitempty" yaml:"s3,omitempty"`
 	OutputFormat string                     `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 	Timeout      string                     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	DefaultModel string                     `json:"default_model" yaml:"default_model"`
@@ -79,24 +81,50 @@ type fileConfig struct {
 	OutputDir    string                     `json:"output_dir" yaml:"output_dir"`
 }
 
+type cliOptions struct {
+	path, httpAddress, serverKey string
+	httpSet, keySet              bool
+}
+
 func parseFlags(args []string, output io.Writer) (string, error) {
+	opts, err := parseCLI(args, output)
+	return opts.path, err
+}
+
+func parseCLI(args []string, output io.Writer) (cliOptions, error) {
+	var opts cliOptions
 	flags := flag.NewFlagSet("images-mcp", flag.ContinueOnError)
 	flags.SetOutput(output)
-	var path string
-	flags.StringVar(&path, "config", "", "YAML or JSON configuration file")
-	flags.StringVar(&path, "c", "", "alias for -config")
+	path := &opts.path
+	flags.StringVar(&opts.httpAddress, "http", "", "enable HTTP MCP at this listen address")
+	flags.StringVar(&opts.serverKey, "server-key", "", "HTTP service access key")
+	flags.StringVar(path, "config", "", "YAML or JSON configuration file")
+	flags.StringVar(path, "c", "", "alias for -config")
 	if err := flags.Parse(args); err != nil {
-		return "", err
+		return opts, err
 	}
 	if flags.NArg() != 0 {
-		return "", fmt.Errorf("unexpected positional arguments")
+		return opts, fmt.Errorf("unexpected positional arguments")
 	}
-	var explicit bool
-	flags.Visit(func(f *flag.Flag) { explicit = true })
-	if explicit && strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("configuration path must not be empty")
+	var configSet bool
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "config", "c":
+			configSet = true
+		case "http":
+			opts.httpSet = true
+		case "server-key":
+			opts.keySet = true
+		}
+	})
+	if configSet && strings.TrimSpace(opts.path) == "" {
+		opts.path = ""
+		return opts, fmt.Errorf("configuration path must not be empty")
 	}
-	return path, nil
+	if opts.httpSet && strings.TrimSpace(opts.httpAddress) == "" {
+		return opts, fmt.Errorf("HTTP listen address must not be empty")
+	}
+	return opts, nil
 }
 
 func loadFileConfig(path string) (fileConfig, error) {
@@ -146,6 +174,12 @@ func loadFileConfig(path string) (fileConfig, error) {
 	}
 	if err != nil {
 		return fileConfig{}, fmt.Errorf("invalid configuration %q", path)
+	}
+	var presence struct {
+		S3 map[string]any `yaml:"s3"`
+	}
+	if yaml.Unmarshal(b, &presence) == nil {
+		_, c.S3.pathStyleSet = presence.S3["use_path_style"]
 	}
 	return c, nil
 }
@@ -395,14 +429,21 @@ func newServer(s *service) *mcp.Server {
 }
 
 func run() error {
-	path, err := parseFlags(os.Args[1:], os.Stderr)
+	opts, err := parseCLI(os.Args[1:], os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	c, err := loadConfig(path)
+	c, err := loadConfig(opts.path)
+	if err != nil {
+		return err
+	}
+	if err := c.configureServer(opts); err != nil {
+		return err
+	}
+	store, err := newObjectStorage(c)
 	if err != nil {
 		return err
 	}
@@ -417,7 +458,11 @@ func run() error {
 	}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	err = newServer(&service{config: c, client: client}).Run(ctx, &mcp.StdioTransport{})
+	svc := &service{config: c, client: client, storage: store}
+	if c.file.Server.Transport == "http" {
+		return serveHTTP(ctx, c.file.Server, newHTTPHandler(svc))
+	}
+	err = newServer(svc).Run(ctx, &mcp.StdioTransport{})
 	if ctx.Err() != nil {
 		return nil
 	}

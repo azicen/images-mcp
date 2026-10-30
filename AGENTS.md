@@ -235,3 +235,28 @@ PY
 | `list_models` 返回空数组 | 未加载目标配置或 `models` 为空 | 核对 `-config` 绝对路径与文件内容；补齐 `models` 后重启；禁止将空数组解释为中转无模型。 |
 
 修复后重复步骤 4 的本地验证。仅在用户任务需要且凭据已配置时调用生成；禁止自动更换模型或无限重试。
+
+## HTTP 接入与 S3（远程 Agent）
+
+默认 stdio 安装流程保持不变。需要远程接入时，在已验证的绝对配置文件中设置 `server.transport: http`、`server.listen`，或执行：
+
+```sh
+images-mcp -config /absolute/path/to/images-mcp.yaml -http 127.0.0.1:8080
+```
+
+`-http` 优先于配置 transport/listen；`-server-key` 优先于配置服务密钥。其余字段使用配置 > 环境回退：`MCP_TRANSPORT`、`MCP_LISTEN`、`MCP_SERVER_KEY` / `SERVER_API_KEY`。服务密钥与中转密钥不同，禁止互相混用、打印或提交。公开服务配置强密钥并通过 HTTPS 反向代理访问。
+
+在宿主支持的远程 MCP 注册入口合并以下信息，保留已有条目：
+
+- Streamable HTTP URL：`https://your-host/mcp`。
+- SSE URL：`https://your-host/sse`，仅 `server.enable_sse: true` 时可用。
+- 请求头：`Authorization: Bearer <用户配置的服务密钥>`；SSE 会话 POST 也必须传递。
+- 兼容 `X-API-Key` 或 URL 查询 `?api_key=`；优先请求头，避免密钥进入访问日志。
+
+各宿主的远程配置字段不同，不得将 stdio 的 command/args 当作远程 URL 配置。更新配置后重启服务、宿主或重新连接。`GET /healthz` 无需密钥，返回 200 `{"status":"ok"}`；缺失或错误密钥访问 `/mcp`、`/sse` 返回 JSON 401。未配置密钥时不会启用鉴权。
+
+HTTP + `file` / `both` 必须配置 S3：非空 `s3.bucket`、完整 `s3.access_key_id` 和 `s3.secret_access_key`（或对应 AWS 环境变量），缺失或非法时启动前退出。禁止降级成本地路径。支持 MinIO/RustFS/R2/AWS，详细字段见 [配置模板](images-mcp.example.yaml)。桶应已存在且凭据允许 PutObject/GetObject/DeleteObject；自建服务指定 endpoint，R2 通常 region 为 auto。所有环境回退见 [README](README.md#http-服务与-s3-输出)。不得猜测存储凭据或将占位值用于真实请求。
+
+HTTP 生成结果要求 `images[].url` 非空且无 `path`，URL 为配置的公开/CDN 前缀加对象键，或预签名 GET URL（默认 24h，最长 168h，临时凭据可能提前过期）。`both` 同时包含 Base64 和原生 MCP 图像；`base64` 无需 S3，也不会写磁盘。stdio 的 `file` / `both` 仍要求本地绝对 `path`。多图失败会尝试删除本次上传对象并报告删除错误。
+
+先执行本地配置和探活验证，不自动请求中转或生成图片。`list_models` 成功不代表存储/中转权限有效；仅在用户授权生成任务中验证真实生图与上传，不重复可能计费的请求。客户端请求体上限为 96 MiB，宿主自身的更短超时仍有效。

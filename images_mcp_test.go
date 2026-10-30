@@ -6,12 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1406,5 +1409,328 @@ func TestOutputFormats(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHTTPConfiguration covers file and environment parsing, CLI overrides,
+// invalid transport/storage settings, required credentials, and base64/stdio bypass.
+func TestHTTPConfiguration(t *testing.T) {
+	for _, name := range []string{"MCP_TRANSPORT", "MCP_LISTEN", "MCP_SERVER_KEY", "SERVER_API_KEY", "S3_ENDPOINT", "AWS_ENDPOINT_URL_S3", "S3_BUCKET", "S3_REGION", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "S3_USE_PATH_STYLE", "S3_PUBLIC_URL_PREFIX"} {
+		t.Setenv(name, "")
+	}
+	opts, err := parseCLI([]string{"-http", "127.0.0.1:8081", "-server-key", "cli"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCP_TRANSPORT", "http")
+	t.Setenv("MCP_LISTEN", ":8090")
+	t.Setenv("SERVER_API_KEY", "fallback")
+	c := config{outputFormat: "file"}
+	if err := c.configureServer(cliOptions{}); err != nil || c.file.Server.Listen != ":8090" || c.file.Server.APIKey != "fallback" {
+		t.Fatal(c, err)
+	}
+	if _, err := newObjectStorage(c); err == nil {
+		t.Fatal("missing S3 accepted")
+	}
+	if err := c.configureServer(opts); err != nil || c.file.Server.Listen != "127.0.0.1:8081" || c.file.Server.APIKey != "cli" {
+		t.Fatal(c, err)
+	}
+	if _, err := parseCLI([]string{"-http="}, &bytes.Buffer{}); err == nil {
+		t.Fatal("empty HTTP address")
+	}
+	c.file.Server.Transport = "invalid"
+	if err := c.configureServer(cliOptions{}); err == nil {
+		t.Fatal("invalid transport")
+	}
+	c.file.Server.Transport = "http"
+	for _, format := range []string{"base64", "file", "both"} {
+		c.outputFormat = format
+		store, err := newObjectStorage(c)
+		if (err == nil) != (format == "base64") || store != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+	}
+	t.Setenv("S3_BUCKET", "bucket")
+	t.Setenv("AWS_ACCESS_KEY_ID", "access")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	t.Setenv("AWS_SESSION_TOKEN", "session")
+	t.Setenv("AWS_ENDPOINT_URL_S3", "http://localhost:9000")
+	t.Setenv("AWS_REGION", "auto")
+	t.Setenv("S3_USE_PATH_STYLE", "true")
+	t.Setenv("S3_PUBLIC_URL_PREFIX", "https://cdn.example/images")
+	store, err := newObjectStorage(c)
+	if err != nil || store.cfg.Region != "auto" || !store.cfg.UsePathStyle || store.ttl != 24*time.Hour || store.cfg.SessionToken != "session" {
+		t.Fatal(store, err)
+	}
+	for _, test := range []struct {
+		name string
+		cfg  s3Config
+	}{
+		{"endpoint", s3Config{Endpoint: "ftp://invalid"}},
+		{"public", s3Config{PublicURLPrefix: "https://user:password@example.com"}},
+		{"ttl", s3Config{PresignTTL: "invalid"}},
+		{"zero ttl", s3Config{PresignTTL: "0s"}},
+		{"long ttl", s3Config{PresignTTL: "169h"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c.file.S3 = test.cfg
+			if _, err := newObjectStorage(c); err == nil {
+				t.Fatal("invalid S3 accepted")
+			}
+		})
+	}
+	c.file.S3 = s3Config{}
+	t.Setenv("S3_USE_PATH_STYLE", "invalid")
+	if _, err := newObjectStorage(c); err == nil {
+		t.Fatal("invalid boolean")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  transport: http\n  listen: ':8088'\n  api_key: service-key\n  enable_sse: true\ns3:\n  bucket: configured\n  use_path_style: false\n  key_prefix: custom\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.configureServer(cliOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := newObjectStorage(loaded)
+	if err != nil || parsed.cfg.UsePathStyle || parsed.cfg.Bucket != "configured" || loaded.file.Server.APIKey != "service-key" || !loaded.file.Server.EnableSSE {
+		t.Fatal(parsed, err)
+	}
+	c.file.Server.Transport = "stdio"
+	if store, err := newObjectStorage(c); store != nil || err != nil {
+		t.Fatal("stdio changed", err)
+	}
+}
+
+// TestHTTPAuthorization covers both protected routes, missing/wrong keys,
+// each supported token source, open mode, health exemption, and disabled SSE.
+func TestHTTPAuthorization(t *testing.T) {
+	s := &service{config: config{file: fileConfig{Server: serverConfig{APIKey: "protected", EnableSSE: true}}}}
+	handler := newHTTPHandler(s)
+	for _, path := range []string{"/mcp", "/sse", "/sse/"} {
+		for _, test := range []struct {
+			name, header, value, query string
+			want                       int
+		}{
+			{"missing", "", "", "", 401}, {"bad", "Authorization", "Bearer wrong", "", 401},
+			{"bearer", "Authorization", "bEaReR protected", "", 204},
+			{"header", "X-API-Key", "protected", "", 204},
+			{"query", "", "", "?api_key=protected", 204},
+		} {
+			t.Run(path+test.name, func(t *testing.T) {
+				// A minimal inner handler makes acceptance independent of MCP method semantics.
+				next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+				req := httptest.NewRequest("POST", path+test.query, nil)
+				req.Header.Set(test.header, test.value)
+				w := httptest.NewRecorder()
+				authorize("protected", next).ServeHTTP(w, req)
+				if w.Code != test.want {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				if test.want == 401 {
+					w = httptest.NewRecorder()
+					handler.ServeHTTP(w, req)
+					if w.Code != 401 || !strings.Contains(w.Body.String(), "unauthorized") {
+						t.Fatal(w)
+					}
+				}
+			})
+		}
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/healthz", nil))
+	if w.Code != 200 || w.Body.String() != `{"status":"ok"}` {
+		t.Fatal(w)
+	}
+	w = httptest.NewRecorder()
+	authorize("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 204 {
+		t.Fatal(w)
+	}
+	s.config.file.Server.EnableSSE = false
+	w = httptest.NewRecorder()
+	newHTTPHandler(s).ServeHTTP(w, httptest.NewRequest("GET", "/sse", nil))
+	if w.Code != 404 {
+		t.Fatal(w)
+	}
+}
+
+// TestHTTPS3Generation uses real MCP HTTP/SSE clients and an S3 HTTP mock.
+// Cases cover presigned/public URLs, both/base64 output, upload failure,
+// decode failure after upload, cleanup errors, and readable uploaded bytes.
+func TestHTTPS3Generation(t *testing.T) {
+	for _, test := range []struct {
+		name, format, public string
+		sse                  bool
+		failAt               int
+		invalid, deleteFail  bool
+	}{
+		{name: "presigned", format: "file"},
+		{name: "public", format: "file", public: "https://cdn.example/assets"},
+		{name: "both", format: "both"},
+		{name: "base64", format: "base64"},
+		{name: "sse", format: "file", sse: true},
+		{name: "partial upload", format: "file", failAt: 2},
+		{name: "invalid second image", format: "file", invalid: true},
+		{name: "cleanup error", format: "file", failAt: 2, deleteFail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			objects := map[string][]byte{}
+			puts, deletes := 0, 0
+			mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch r.Method {
+				case "PUT":
+					puts++
+					if test.failAt == puts {
+						w.WriteHeader(403)
+						return
+					}
+					if r.Header.Get("Content-Type") != "image/png" || !strings.Contains(r.Header.Get("Authorization"), "Credential=access/") {
+						t.Error("incorrect S3 headers")
+					}
+					data, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					objects[r.URL.Path] = data
+					w.WriteHeader(200)
+				case "GET":
+					data, ok := objects[r.URL.Path]
+					if !ok {
+						w.WriteHeader(404)
+						return
+					}
+					_, _ = w.Write(data)
+				case "DELETE":
+					deletes++
+					if test.deleteFail {
+						w.WriteHeader(403)
+						return
+					}
+					delete(objects, r.URL.Path)
+					w.WriteHeader(204)
+				default:
+					w.WriteHeader(405)
+				}
+			}))
+			defer mock.Close()
+			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				second := "data:image/png;base64," + testPNG
+				if test.invalid {
+					second = "not-an-image"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"b64_json": testPNG}, map[string]string{"b64_json": second}}})
+			}))
+			defer relay.Close()
+			c := config{baseURL: relay.URL, apiKey: "relay-key", outputFormat: test.format, outputDir: filepath.Join(t.TempDir(), "unused"), file: fileConfig{Server: serverConfig{Transport: "http", APIKey: "service-key", EnableSSE: test.sse}, S3: s3Config{Endpoint: mock.URL, Bucket: "bucket", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", UsePathStyle: true, PublicURLPrefix: test.public}}}
+			store, err := newObjectStorage(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host := httptest.NewServer(newHTTPHandler(&service{config: c, client: relay.Client(), storage: store}))
+			defer host.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var transport mcp.Transport = &mcp.StreamableClientTransport{Endpoint: host.URL + "/mcp?api_key=service-key"}
+			if test.sse {
+				transport = &mcp.SSEClientTransport{Endpoint: host.URL + "/sse?api_key=service-key", HTTPClient: &http.Client{Transport: authRoundTripper{base: http.DefaultTransport, key: "service-key"}}}
+			}
+			session, err := mcp.NewClient(&mcp.Implementation{Name: "http-test", Version: "1"}, nil).Connect(ctx, transport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-2", "prompt": "draw"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := test.failAt > 0 || test.invalid
+			if result.IsError != failed {
+				t.Fatal(result)
+			}
+			mu.Lock()
+			count, putCount, deleteCount := len(objects), puts, deletes
+			mu.Unlock()
+			if failed {
+				if deleteCount != 1 || (!test.deleteFail && count != 0) {
+					t.Fatalf("objects=%d deletes=%d", count, deleteCount)
+				}
+				return
+			}
+			var out generateOutput
+			encoded, _ := json.Marshal(result.StructuredContent)
+			if err := json.Unmarshal(encoded, &out); err != nil || len(out.Images) != 2 {
+				t.Fatal(string(encoded), err)
+			}
+			if _, err := os.Stat(c.outputDir); !os.IsNotExist(err) {
+				t.Fatal("HTTP wrote local files", err)
+			}
+			for _, img := range out.Images {
+				if img.Path != "" || img.Bytes <= 0 || img.MIMEType != "image/png" {
+					t.Fatal(img)
+				}
+				if test.format == "base64" {
+					if img.URL != "" || img.Base64 == "" || putCount != 0 {
+						t.Fatal(img)
+					}
+					continue
+				}
+				if test.format == "both" && img.Base64 == "" {
+					t.Fatal(img)
+				}
+				if test.public != "" {
+					if !strings.HasPrefix(img.URL, test.public+"/images/") {
+						t.Fatal(img.URL)
+					}
+					continue
+				}
+				u, err := url.Parse(img.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if u.Query().Get("X-Amz-Expires") != "86400" || !strings.HasPrefix(u.Path, "/bucket/images/"+time.Now().UTC().Format("2006/01/02")+"/") {
+					t.Fatal(img.URL)
+				}
+				resp, err := http.Get(img.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				raw, _ := decodeBase64(testPNG)
+				if resp.StatusCode != 200 || !bytes.Equal(data, raw) {
+					t.Fatal("S3 bytes differ")
+				}
+			}
+		})
+	}
+}
+
+type authRoundTripper struct {
+	base http.RoundTripper
+	key  string
+}
+
+func (a authRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+a.key)
+	return a.base.RoundTrip(r)
+}
+
+// TestHTTPShutdown covers bind failure and cancellation without leaked watchers.
+func TestHTTPShutdown(t *testing.T) {
+	if err := serveHTTP(context.Background(), serverConfig{Listen: "invalid address"}, http.NotFoundHandler()); err == nil {
+		t.Fatal("invalid listen accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := serveHTTP(ctx, serverConfig{Listen: "127.0.0.1:0"}, http.NotFoundHandler()); err != nil {
+		t.Fatal(err)
 	}
 }

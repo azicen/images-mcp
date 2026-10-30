@@ -57,3 +57,26 @@ families:
   gpt-image:
     base_url: https://gpt-image-relay.example/v1
     api_key: your-gpt-image-api-key
+
+# 传输配置（默认 stdio）；HTTP 通过 /mcp 接入，/healthz 无需鉴权
+server:
+  transport: stdio # stdio | http；-http 地址 可覆盖为 HTTP
+  listen: "127.0.0.1:8080" # HTTP 监听地址；MCP_LISTEN 回退
+  api_key: "" # HTTP 服务访问密钥，与中转 API Key 分开；建议通过 MCP_SERVER_KEY 注入
+  enable_sse: false # 可选旧版 SSE /sse，会话 POST 同样需要鉴权
+
+# HTTP + file/both 强制配置 S3；stdio 或 base64 忽略此块
+# 必须填写真实 bucket、完整静态凭据；不会自动建桶或验证远端权限
+s3:
+  endpoint: "" # MinIO/RustFS: https://storage.example；R2: https://<account>.r2.cloudflarestorage.com；AWS 可空
+  bucket: "" # S3_BUCKET
+  region: "us-east-1" # R2 使用 auto；S3_REGION / AWS_REGION 回退
+  access_key_id: "" # AWS_ACCESS_KEY_ID 回退
+  secret_access_key: "" # AWS_SECRET_ACCESS_KEY 回退
+  session_token: "" # 可选临时凭据 AWS_SESSION_TOKEN
+  use_path_style: true # MinIO/RustFS 通常为 true；R2/AWS 按提供商要求设置
+  key_prefix: images # 对象键: images/YYYY/MM/DD/<随机十六进制>.<扩展名>
+  public_url_prefix: "" # 可选公开桶/CDN 前缀，需由用户配置公开访问；S3_PUBLIC_URL_PREFIX 回退
+  presign_ttl: 24h # 无公开前缀时签发 GET URL；正数 Go duration，最长 168h
+# endpoint 回退: S3_ENDPOINT / AWS_ENDPOINT_URL_S3
+# use_path_style 未配置时回退 S3_USE_PATH_STYLE (true/false)

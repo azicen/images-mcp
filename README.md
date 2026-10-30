@@ -2,7 +2,7 @@
 
 # images-mcp
 
-通过 OpenAI 兼容中转服务统一生成、编辑图片，支持本地文件或纯内存 Base64 输出。一个 Go 二进制，通过 stdio 接入 MCP 客户端。
+通过 OpenAI 兼容中转服务统一生成、编辑图片，支持本地文件或纯内存 Base64 输出。一个 Go 二进制，通过 stdio 或 HTTP 接入 MCP 客户端；HTTP 文件输出使用 S3 URL。
 
 > 🤖 **让 AI Agent 帮你自动安装与配置？**
 > 直接将这句提示词发给你的 Agent：
@@ -103,3 +103,39 @@ output_dir: ""
 go test -race -cover ./...
 go build -o bin/images-mcp .
 ```
+
+## HTTP 服务与 S3 输出
+
+HTTP 模式使用官方 Go SDK 的 Streamable HTTP；默认仍为 stdio。在原有模型、中转配置之外增加：
+
+```yaml
+server:
+  transport: http
+  listen: "127.0.0.1:8080"
+  api_key: "" # 通过 MCP_SERVER_KEY 注入真实服务密钥
+  enable_sse: false
+s3:
+  endpoint: https://storage.example
+  bucket: generated-images
+  region: us-east-1
+  access_key_id: "" # 通过 AWS_ACCESS_KEY_ID 注入
+  secret_access_key: "" # 通过 AWS_SECRET_ACCESS_KEY 注入
+  use_path_style: true
+  key_prefix: images
+  public_url_prefix: ""
+  presign_ttl: 24h
+```
+
+```sh
+images-mcp -config /absolute/path/to/images-mcp.yaml -http 127.0.0.1:8080
+```
+
+`-http` 覆盖 `server.transport` 和 `server.listen`；`-server-key` 覆盖服务密钥。其余字段优先读取配置，再回退环境：`MCP_TRANSPORT`、`MCP_LISTEN`、`MCP_SERVER_KEY` / `SERVER_API_KEY`。不建议在命令行暴露真实密钥，优先使用权限受限配置或环境变量。
+
+客户端连接 `http://127.0.0.1:8080/mcp`。启用 `enable_sse` 后也可使用 `http://127.0.0.1:8080/sse`。每次请求（含 SSE 后续 POST）传递 `Authorization: Bearer <服务密钥>`；也支持 `X-API-Key` 或 `?api_key=`，优先级为 Bearer、X-API-Key、查询参数。缺失或错误密钥返回 JSON 401。未配置服务密钥时不鉴权；公开部署应配置强密钥并在反向代理使用 HTTPS。查询参数容易进入日志，优先使用请求头。`GET /healthz` 无需鉴权，返回 `{"status":"ok"}`；HTTP 请求体上限为 96 MiB。
+
+HTTP 的 `file` / `both` 必须配置 S3 bucket 和完整静态凭据，否则启动前报错，不监听端口。桶必须已存在，凭据需要 PutObject、GetObject 和 DeleteObject 权限。支持 MinIO、RustFS、R2、AWS S3；自建服务设置 endpoint，AWS 可省略，R2 通常使用 `region: auto`。环境回退包括 `S3_ENDPOINT` / `AWS_ENDPOINT_URL_S3`、`S3_BUCKET`、`S3_REGION` / `AWS_REGION`、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`S3_USE_PATH_STYLE`、`S3_PUBLIC_URL_PREFIX`。显式的 `use_path_style: false` 优先于环境。
+
+图片上传为 `{key_prefix}/YYYY/MM/DD/{random_hex}{ext}`，按实际图片 MIME 设置 Content-Type。结果的 `images[].url` 为公开前缀拼接的 URL，或默认有效 24h 的预签名 GET URL（`presign_ttl` 最长 168h；临时凭据过期会提前失效）。公开前缀必须已经能够访问相应对象，服务不会自动修改桶策略。HTTP 结果不包含本地 `path`；`both` 额外返回 Base64 与原生 MCP 图片。多图失败会尝试删除本次已上传对象，清理失败会附在错误中。成功对象的保留周期由桶生命周期策略管理。
+
+`output_format: base64` 在 HTTP 模式下无需 S3，不上传、不落盘。stdio 始终保持原有本地绝对路径行为。修改配置后重启服务和相应客户端连接；`list_models` 不会验证中转或 S3 凭据，仅在授权生成任务中验证真实上传。

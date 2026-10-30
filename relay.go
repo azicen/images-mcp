@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -15,11 +16,13 @@ import (
 )
 
 type imageMetadata struct {
-	Path     string `json:"path,omitempty"`
-	Base64   string `json:"base64,omitempty"`
-	data     []byte
-	MIMEType string `json:"mime_type"`
-	Bytes    int    `json:"bytes"`
+	Path      string `json:"path,omitempty"`
+	URL       string `json:"url,omitempty"`
+	objectKey string
+	Base64    string `json:"base64,omitempty"`
+	data      []byte
+	MIMEType  string `json:"mime_type"`
+	Bytes     int    `json:"bytes"`
 }
 type generateOutput struct {
 	Model  string          `json:"model"`
@@ -27,8 +30,9 @@ type generateOutput struct {
 	Images []imageMetadata `json:"images"`
 }
 type service struct {
-	config config
-	client *http.Client
+	config  config
+	client  *http.Client
+	storage *objectStorage
 }
 
 // explicitFamily normalizes both aliases and rejects ambiguous selections.
@@ -246,6 +250,9 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	defer func() {
 		if err != nil {
 			for _, img := range out.Images {
+				if img.objectKey != "" {
+					err = errors.Join(err, s.storage.remove(context.WithoutCancel(ctx), img.objectKey))
+				}
 				if img.Path != "" {
 					_ = os.Remove(img.Path)
 				}

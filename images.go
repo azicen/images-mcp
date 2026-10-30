@@ -259,6 +259,16 @@ func (s *service) saveImage(ctx context.Context, ref string) (imageMetadata, err
 	if s.config.outputFormat == "base64" {
 		return metadata, nil
 	}
+	if s.config.file.Server.Transport == "http" {
+		if s.storage == nil {
+			return imageMetadata{}, fmt.Errorf("HTTP file output requires S3 storage")
+		}
+		metadata.URL, metadata.objectKey, err = s.storage.upload(ctx, b, mimeType)
+		if err != nil {
+			return imageMetadata{}, err
+		}
+		return metadata, nil
+	}
 	if err := os.MkdirAll(s.config.outputDir, 0700); err != nil {
 		return imageMetadata{}, fmt.Errorf("create output directory: %w", err)
 	}

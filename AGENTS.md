@@ -260,3 +260,26 @@ HTTP + `file` / `both` 必须配置 S3：非空 `s3.bucket`、完整 `s3.access_
 HTTP 生成结果要求 `images[].url` 非空且无 `path`，URL 为配置的公开/CDN 前缀加对象键，或预签名 GET URL（默认 24h，最长 168h，临时凭据可能提前过期）。`both` 同时包含 Base64 和原生 MCP 图像；`base64` 无需 S3，也不会写磁盘。stdio 的 `file` / `both` 仍要求本地绝对 `path`。多图失败会尝试删除本次上传对象并报告删除错误。
 
 先执行本地配置和探活验证，不自动请求中转或生成图片。`list_models` 成功不代表存储/中转权限有效；仅在用户授权生成任务中验证真实生图与上传，不重复可能计费的请求。客户端请求体上限为 96 MiB，宿主自身的更短超时仍有效。
+
+## Docker：Agent / 自动化部署模板
+
+使用 `ghcr.io/azicen/images-mcp:latest`（生产应固定已发布版本或摘要），支持 amd64/arm64。先准备已验证的主机绝对配置路径 `/etc/images-mcp/config.yaml`；若路径不同，替换下列挂载源。文件须可由 UID/GID `10001:10001` 读取，并只读挂载。模型 ID 需用户确认且显式声明 `api`；设置 `output_format: file`，清除所有遮蔽环境回退的占位凭据。不得将配置或密钥复制进镜像。
+
+用户须事先安全配置真实的中转 URL/Key、独立强服务密钥、S3 桶及完整静态凭据；以下命令只继承环境，不提供假凭据。缺失时继续本地构建/语法验证，提示用户补齐后再启动，不猜测值：
+
+```sh
+docker pull ghcr.io/azicen/images-mcp:latest
+docker run -d --name images-mcp --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
+  -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
+  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  ghcr.io/azicen/images-mcp:latest \
+  -config /etc/images-mcp/config.yaml -http :8080
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+S3 桶必须预先存在，权限需 PutObject/GetObject/DeleteObject；AWS 可省略 endpoint，自建服务按实际设置 endpoint/path-style，R2 通常 region 为 auto。配置字段优先于环境变量。缺失或非法 S3 配置会在 HTTP file/both 启动前退出。`base64` 无需 S3；不得为了绕过存储错误擅自变更用户输出格式。
+
+默认 CMD 为 `-http :8080`；传入配置参数会替换整个 CMD，须显式保留 HTTP 参数或在文件中启用 HTTP。远程 Agent 连接 HTTPS 反向代理的 `/mcp`，请求头使用独立服务密钥。仅探活和 `list_models` 不验证中转或 S3 权限，禁止自动生图验证。配置修改后重建容器、重新连接宿主。不要输出 `docker inspect` 中可能包含的凭据。stdio 使用 `-i --no-healthcheck` 且不分配 TTY；更换 HTTP 端口时同步修改映射与健康检查。

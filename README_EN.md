@@ -139,3 +139,35 @@ HTTP `file` / `both` output requires an S3 bucket and complete static credential
 Objects use `{key_prefix}/YYYY/MM/DD/{random_hex}{ext}` and the detected image Content-Type. Results contain `images[].url` and omit `path`. A configured public URL prefix is joined with the object key; otherwise the server creates a presigned GET URL, valid for 24h by default (`presign_ttl`, positive Go duration up to 168h). Temporary credentials can expire earlier. Public/CDN access must already be configured; the server does not change bucket policies. `both` also returns Base64 and native MCP image content. Failed multi-image calls attempt to delete objects uploaded by that call and report cleanup failures. Configure bucket lifecycle policies for successful objects.
 
 HTTP `base64` output needs no S3 and writes nothing to disk. Stdio retains local absolute paths. Restart the server and client connections after configuration changes. `list_models` does not validate relay or S3 credentials; only authorized generation tasks perform real uploads. See the [complete configuration template](images-mcp.example.yaml) for all fields.
+
+## Docker deployment
+
+The image `ghcr.io/azicen/images-mcp` supports `linux/amd64` and `linux/arm64`. After a release is published, pull `latest`; pin a published version or digest for production:
+
+```sh
+docker pull ghcr.io/azicen/images-mcp:latest
+```
+
+Prepare `/etc/images-mcp/config.yaml` on the host. Use relay-supported model IDs with explicit `api: chat` or `api: images`. For environment-based relay credentials, remove placeholder credentials from `default`, `families`, and individual models so they cannot override the environment. Set `output_format: file`. Configuration is excluded from the image; ensure UID/GID `10001:10001` can read the mounted file (for example, owner 10001 with mode 600).
+
+Securely populate the following real environment variables in your shell first. `-e NAME` inherits values without putting secrets in command text:
+
+```sh
+docker run -d --name images-mcp --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
+  -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
+  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  ghcr.io/azicen/images-mcp:latest \
+  -config /etc/images-mcp/config.yaml -http :8080
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+HTTP `file` / `both` requires an existing S3 bucket and complete credentials. Set an endpoint for custom storage; R2 generally uses region `auto`. Set a separate strong `MCP_SERVER_KEY`. Connect clients to `/mcp` with `Authorization: Bearer <service-key>` and use an HTTPS reverse proxy for public access. Docker administrators can inspect container environments, so restrict host access. File configuration takes precedence over environment fallbacks; see the HTTP/S3 section above.
+
+The default CMD is `-http :8080`. Arguments after the image replace the entire CMD: when passing a configuration path, also pass `-http :8080` or enable HTTP in that configuration. Changing the port requires updating the port mapping and `--health-cmd`. `/healthz` checks the local server only, not relay or storage permissions. Recreate the container and reconnect clients after configuration changes.
+
+With `output_format: base64`, S3 is unnecessary. For stdio, use `docker run --rm -i --no-healthcheck` without `-t`, mount the same configuration, and pass only `-config /etc/images-mcp/config.yaml` after the image; set `server.transport: stdio` in the file. Local file output also needs a writable output-directory mount accessible to UID 10001. Disable or replace the default health check for stdio or HTTP ports other than 8080.
+
+Build locally with `docker build -t images-mcp:local .`. GitHub Actions tests and builds main pushes and PRs without publishing. A `v*` tag publishes version, minor, major, and `latest` tags. Manual runs default to no push; selecting `push` publishes the selected branch tag. Manual runs on version tags still follow the tag publishing condition. Prerelease SemVer tags follow metadata-action rules; all `v*` tags still update `latest`.

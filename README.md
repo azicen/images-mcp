@@ -139,3 +139,35 @@ HTTP 的 `file` / `both` 必须配置 S3 bucket 和完整静态凭据，否则�
 图片上传为 `{key_prefix}/YYYY/MM/DD/{random_hex}{ext}`，按实际图片 MIME 设置 Content-Type。结果的 `images[].url` 为公开前缀拼接的 URL，或默认有效 24h 的预签名 GET URL（`presign_ttl` 最长 168h；临时凭据过期会提前失效）。公开前缀必须已经能够访问相应对象，服务不会自动修改桶策略。HTTP 结果不包含本地 `path`；`both` 额外返回 Base64 与原生 MCP 图片。多图失败会尝试删除本次已上传对象，清理失败会附在错误中。成功对象的保留周期由桶生命周期策略管理。
 
 `output_format: base64` 在 HTTP 模式下无需 S3，不上传、不落盘。stdio 始终保持原有本地绝对路径行为。修改配置后重启服务和相应客户端连接；`list_models` 不会验证中转或 S3 凭据，仅在授权生成任务中验证真实上传。
+
+## Docker 部署
+
+镜像：`ghcr.io/azicen/images-mcp`，支持 `linux/amd64` 和 `linux/arm64`。版本发布后可拉取 `latest`，生产部署建议使用已发布的版本标签或摘要：
+
+```sh
+docker pull ghcr.io/azicen/images-mcp:latest
+```
+
+准备主机绝对路径 `/etc/images-mcp/config.yaml`，其中模型 ID 必须是中转实际支持的 ID，且每个模型显式声明 `api: chat` 或 `api: images`。使用环境变量注入中转凭据时，删除模板中的 `default`、`families` 和模型级占位凭据，避免遮蔽环境变量；设置 `output_format: file`。配置文件不会打进镜像，挂载前须确保 UID/GID `10001:10001` 可读取（例如文件属主为 10001、权限为 600）。
+
+先在当前 shell 中安全配置下列真实环境变量，再运行；`-e NAME` 继承环境值，不将密钥写入命令文本：
+
+```sh
+docker run -d --name images-mcp --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
+  -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
+  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  ghcr.io/azicen/images-mcp:latest \
+  -config /etc/images-mcp/config.yaml -http :8080
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+HTTP 的 `file` / `both` 输出必须配置已存在的 S3 桶和完整凭据；自建存储设置 endpoint，R2 通常使用 region `auto`。`MCP_SERVER_KEY` 为独立的强服务密钥。客户端通过 `/mcp` 连接，并发送 `Authorization: Bearer <服务密钥>`；对外提供服务时通过 HTTPS 反向代理访问。Docker 管理员可查看容器环境，应限制宿主访问。配置值优先于环境回退，详见上面的 HTTP/S3 说明。
+
+镜像默认参数为 `-http :8080`；镜像名后的参数会整体替换默认 CMD，因此指定配置文件时也需带上 `-http :8080`，或在配置中启用 HTTP。若改端口，须同步调整端口映射及 `--health-cmd`。`/healthz` 仅检查本地服务，不能证明中转或 S3 权限有效。配置变更后重建容器并重新连接客户端。
+
+使用 `output_format: base64` 可省略 S3。stdio 模式使用 `docker run --rm -i --no-healthcheck`（不加 `-t`），挂载同一配置并在镜像名后仅传 `-config /etc/images-mcp/config.yaml`，配置中设置 `server.transport: stdio`；本地文件输出需额外挂载 UID 10001 可写的绝对输出目录。stdio 和非 8080 HTTP 模式不能直接沿用默认 HTTP 健康检查。
+
+本地构建：`docker build -t images-mcp:local .`。GitHub Actions 在 main 推送和 PR 时只测试、构建；`v*` 标签发布版本、主次版本及 `latest` 标签。手动运行默认不推送，勾选 `push` 后发布当前分支标签；手动从版本标签运行时仍遵循标签发布条件。预发布版本的 SemVer 标签遵循 metadata-action 的规则，`v*` 标签仍会更新 `latest`。

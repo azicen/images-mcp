@@ -4,6 +4,19 @@
 
 A single binary for image generation and editing through explicitly configured Chat and Images APIs, with shared image validation, timeouts and storage.
 
+
+> 🤖 **Want an AI Agent to install and configure it for you?**
+> Send this prompt to your Agent:
+> `Follow https://github.com/azicen/images-mcp/blob/main/AGENTS.md to install and configure images-mcp for me.`
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | Agent automation: installation, configuration, verification, troubleshooting and self-healing |
+| [images-mcp.example.yaml](images-mcp.example.yaml) | Configuration template for standalone, forward and server modes |
+| [DESIGN.md](DESIGN.md) | Architecture, protocol boundaries and design decisions |
+
 ## Runtime modes
 
 | Mode | Agent interface | Generation | Reference images |

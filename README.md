@@ -4,6 +4,19 @@
 
 单二进制图片生成与编辑工具，支持 Gemini Chat 与 GPT Image 协议。通过配置显式选择协议，统一生成、参考图校验、超时与输出存储。
 
+
+> 🤖 **让 AI Agent 帮你自动安装与配置？**
+> 直接将这句提示词发给你的 Agent：
+> `按照 https://github.com/azicen/images-mcp/blob/main/AGENTS.md 为我安装和配置 images-mcp`
+
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | 面向 Agent 的自动化安装、配置、验证与排障自愈指南 |
+| [images-mcp.example.yaml](images-mcp.example.yaml) | standalone、forward、server 三种模式的配置模板 |
+| [DESIGN.md](DESIGN.md) | 系统架构、协议边界与设计决策 |
+
 ## 三种运行模式
 
 | mode | 面向 Agent 的接口 | 生成位置 | 参考图 |

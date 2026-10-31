@@ -393,6 +393,30 @@ func (c config) generationDescription() string {
 	return b.String()
 }
 
+type uploadImageInput struct {
+	Filename string `json:"filename,omitempty" jsonschema:"Optional original filename of the local image (e.g. cat.png)"`
+}
+
+func (s *service) uploadInstructions() string {
+	if s.config.file.Server.Transport != "http" {
+		return "Local stdio mode: pass the local absolute image path directly in generate_image input_images; no upload is required."
+	}
+	instructions := `HTTP mode: upload local reference images to POST /upload using multipart/form-data (field: file or image) or a binary image body. Supported formats: PNG/JPEG/WebP; maximum 32 MiB per image.
+Do not generate large Base64 tool arguments. Run curl on the machine containing the local file, replacing the placeholders with your server URL and local path:
+curl -X POST "<server_url>/upload" -F "file=@<local_path>"
+A successful upload returns {"url":"https://...","mime_type":"image/png","bytes":1048576}. Put the returned url in generate_image input_images.
+S3 storage must be configured for uploads; uploads are not automatically retried.`
+	if s.config.file.Server.APIKey != "" {
+		instructions += `
+Authentication is required: Authorization: Bearer <server_api_key> or X-API-Key. Use the server key, not the relay key:
+curl -X POST "<server_url>/upload" -H "Authorization: Bearer <server_api_key>" -F "file=@<local_path>"`
+	}
+	if s.storage == nil {
+		instructions += "\nS3 storage is currently unavailable; configure S3 and restart the server before uploading."
+	}
+	return instructions
+}
+
 func newServer(s *service) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.3.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
@@ -424,6 +448,9 @@ func newServer(s *service) *mcp.Server {
 			return nil, nil, err
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "upload_image", Description: "Get instructions and endpoint details for uploading local reference images to S3 when using images-mcp over HTTP. Call this before generate_image if you have local image files."}, func(_ context.Context, _ *mcp.CallToolRequest, _ uploadImageInput) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.uploadInstructions()}}}, nil, nil
 	})
 	return server
 }

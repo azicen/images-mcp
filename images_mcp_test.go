@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -388,7 +389,7 @@ func TestMCP(t *testing.T) {
 	}
 	defer cs.Close()
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 2 || list.Tools[0].Name != "generate_image" {
+	if err != nil || len(list.Tools) != 3 || list.Tools[0].Name != "generate_image" {
 		t.Fatal(list, err)
 	}
 	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-2.5", "prompt": "draw"}})
@@ -1732,5 +1733,128 @@ func TestHTTPShutdown(t *testing.T) {
 	cancel()
 	if err := serveHTTP(ctx, serverConfig{Listen: "127.0.0.1:0"}, http.NotFoundHandler()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestUploadEndpoint covers authenticated binary/multipart success and URL metadata,
+// missing storage, invalid MIME/body/form, size limits, methods, and S3 failure.
+func TestUploadEndpoint(t *testing.T) {
+	raw, _ := base64.StdEncoding.DecodeString(testPNG)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		if !bytes.Equal(data, raw) {
+			t.Error("uploaded bytes differ")
+		}
+		w.WriteHeader(200)
+	}))
+	defer mock.Close()
+	c := config{outputFormat: "base64", file: fileConfig{Server: serverConfig{Transport: "http", APIKey: "key"}, S3: s3Config{Endpoint: mock.URL, Bucket: "bucket", AccessKeyID: "access", SecretAccessKey: "secret", UsePathStyle: true, PublicURLPrefix: "https://cdn.example"}}}
+	store, err := newObjectStorage(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &service{config: c, storage: store}
+	handler := newHTTPHandler(svc)
+	var form bytes.Buffer
+	mw := multipart.NewWriter(&form)
+	part, _ := mw.CreateFormFile("image", "cat.png")
+	_, _ = part.Write(raw)
+	_ = mw.Close()
+	for _, test := range []struct {
+		name, method, contentType, key string
+		data                           []byte
+		status                         int
+	}{
+		{"binary", "POST", "image/png", "key", raw, 200},
+		{"multipart", "POST", mw.FormDataContentType(), "key", form.Bytes(), 200},
+		{"unauthorized", "POST", "image/png", "", raw, 401},
+		{"mime", "POST", "image/png", "key", []byte("not an image"), 400},
+		{"empty", "POST", "image/png", "key", nil, 400},
+		{"invalid form", "POST", "multipart/form-data", "key", raw, 400},
+		{"invalid header", "POST", ";", "key", raw, 400},
+		{"large", "POST", "image/png", "key", make([]byte, maxImageBytes+1), 413},
+		{"method", "GET", "image/png", "key", nil, 405},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, "/upload", bytes.NewReader(test.data))
+			req.Header.Set("Content-Type", test.contentType)
+			req.Header.Set("X-API-Key", test.key)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != test.status {
+				t.Fatalf("%d: %s", w.Code, w.Body.String())
+			}
+			if w.Code == 200 {
+				var out struct {
+					URL   string `json:"url"`
+					MIME  string `json:"mime_type"`
+					Bytes int    `json:"bytes"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || !strings.HasPrefix(out.URL, "https://cdn.example/") || out.MIME != "image/png" || out.Bytes != len(raw) {
+					t.Fatalf("invalid response: %s", w.Body.String())
+				}
+			}
+		})
+	}
+	svc.storage = nil
+	w := httptest.NewRecorder()
+	svc.handleUpload(w, httptest.NewRequest("POST", "/upload", nil))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "S3 storage is required") {
+		t.Fatal(w.Body.String())
+	}
+	svc.storage = store
+	mock.Close()
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/upload", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "image/png")
+	svc.handleUpload(w, req)
+	if w.Code != 500 {
+		t.Fatal(w.Code)
+	}
+}
+
+// TestUploadTool covers actual MCP registration and text output for both modes.
+// HTTP path failures must guide recovery before any filesystem access or relay call.
+func TestUploadTool(t *testing.T) {
+	for _, mode := range []string{"stdio", "http"} {
+		t.Run(mode, func(t *testing.T) {
+			svc := &service{config: config{file: fileConfig{Server: serverConfig{Transport: mode, APIKey: "secret"}}}}
+			ctx := context.Background()
+			a, b := mcp.NewInMemoryTransports()
+			ss, err := newServer(svc).Connect(ctx, a, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ss.Close()
+			cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, b, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cs.Close()
+			result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "upload_image", Arguments: map[string]any{"filename": "cat.png"}})
+			if err != nil || result.IsError {
+				t.Fatalf("%v %v", result, err)
+			}
+			text := result.Content[0].(*mcp.TextContent).Text
+			expected := "absolute"
+			if mode == "http" {
+				expected = "POST /upload"
+			}
+			if !strings.Contains(text, expected) || strings.Contains(text, "Bearer secret") {
+				t.Fatal(text)
+			}
+			if mode == "http" {
+				result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-test", "api": "images", "base_url": "https://relay.invalid/v1", "api_key": "test-key", "prompt": "edit", "input_images": []string{"/tmp/cat.png"}}})
+				if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "Please upload the image via POST /upload (or call upload_image tool for instructions)") {
+					t.Fatalf("unexpected recovery result: %v %v", result, err)
+				}
+				for _, ref := range []string{"/tmp/cat.png", "./cat.png", "../cat.png", "~/cat.png", `C:\cat.png`, "cat.jpeg"} {
+					_, _, err := svc.loadImage(ctx, ref, true)
+					if err == nil || !strings.Contains(err.Error(), "remote server has no access to client local filesystem") || !strings.Contains(err.Error(), "upload_image") {
+						t.Fatalf("%s: %v", ref, err)
+					}
+				}
+			}
+		})
 	}
 }

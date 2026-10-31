@@ -283,3 +283,26 @@ curl --fail http://127.0.0.1:8080/healthz
 S3 桶必须预先存在，权限需 PutObject/GetObject/DeleteObject；AWS 可省略 endpoint，自建服务按实际设置 endpoint/path-style，R2 通常 region 为 auto。配置字段优先于环境变量。缺失或非法 S3 配置会在 HTTP file/both 启动前退出。`base64` 无需 S3；不得为了绕过存储错误擅自变更用户输出格式。
 
 默认 CMD 为 `-http :8080`；传入配置参数会替换整个 CMD，须显式保留 HTTP 参数或在文件中启用 HTTP。远程 Agent 连接 HTTPS 反向代理的 `/mcp`，请求头使用独立服务密钥。仅探活和 `list_models` 不验证中转或 S3 权限，禁止自动生图验证。配置修改后重建容器、重新连接宿主。不要输出 `docker inspect` 中可能包含的凭据。stdio 使用 `-i --no-healthcheck` 且不分配 TTY；更换 HTTP 端口时同步修改映射与健康检查。
+
+
+## HTTP 模式上传本地参考图
+
+Agent SOP：先确认连接模式。stdio 模式直接将本地绝对路径填入 `generate_image.input_images`；HTTP 模式先调用 `upload_image` 获取指引，或在图片所在机器执行以下命令上传，再将返回的 `url` 填入 `generate_image.input_images`。不要在工具参数中生成大段 Base64。
+
+```sh
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "Authorization: Bearer <server_api_key>" \
+  -F "file=@<local_path>"
+
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "X-API-Key: <server_api_key>" \
+  -H "Content-Type: image/png" --data-binary "@<local_path>"
+```
+
+```json
+{"url":"https://s3.example.com/images/abc.png","mime_type":"image/png","bytes":1048576}
+```
+
+将占位符替换为实际值；仅在未配置服务密钥时省略鉴权头。`/upload` 接收单张 PNG/JPEG/WebP，最大 32 MiB；支持 multipart 字段 `file` / `image` 或二进制请求体。鉴权与 MCP 一致，支持 Bearer、X-API-Key 和 api_key 查询参数，优先请求头。必须配置 S3；base64 输出模式也可单独配置 S3 以启用上传，不改变生成输出格式。缺少 S3、空文件或无效输入返回 400，超限返回 413，非 POST 返回 405，存储失败返回 500。上传会创建 S3 对象，不自动重试。
+
+`upload_image` 只返回文字指引，不会代替客户端读取或上传文件。HTTP 模式收到本地路径时，错误会明确指向此工具及 `/upload`；Agent 应按指引上传，再使用返回 URL 自愈，禁止改用服务端本地路径冒充客户端文件。

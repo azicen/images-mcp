@@ -171,3 +171,26 @@ The default CMD is `-http :8080`. Arguments after the image replace the entire C
 With `output_format: base64`, S3 is unnecessary. For stdio, use `docker run --rm -i --no-healthcheck` without `-t`, mount the same configuration, and pass only `-config /etc/images-mcp/config.yaml` after the image; set `server.transport: stdio` in the file. Local file output also needs a writable output-directory mount accessible to UID 10001. Disable or replace the default health check for stdio or HTTP ports other than 8080.
 
 Build locally with `docker build -t images-mcp:local .`. GitHub Actions tests and builds main pushes and PRs without publishing. A `v*` tag publishes version, minor, major, and `latest` tags. Manual runs default to no push; selecting `push` publishes the selected branch tag. Manual runs on version tags still follow the tag publishing condition. Prerelease SemVer tags follow metadata-action rules; all `v*` tags still update `latest`.
+
+
+## Upload local reference images over HTTP
+
+Remote servers cannot access the agent's local filesystem. In stdio mode, pass absolute local paths directly to `generate_image.input_images`. In HTTP mode, call the `upload_image` MCP tool for instructions, then run curl on the machine containing the image:
+
+```sh
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "Authorization: Bearer <server_api_key>" \
+  -F "file=@<local_path>"
+
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "X-API-Key: <server_api_key>" \
+  -H "Content-Type: image/png" --data-binary "@<local_path>"
+```
+
+```json
+{"url":"https://s3.example.com/images/abc.png","mime_type":"image/png","bytes":1048576}
+```
+
+Replace placeholders with actual values; omit authentication headers only when no server key is configured. `/upload` accepts one PNG/JPEG/WebP image up to 32 MiB, using multipart field `file` or `image`, or a binary body. It shares MCP authentication (Bearer, X-API-Key, or api_key query parameter; prefer headers). S3 is required even when generation uses base64 output; configuring S3 enables uploads without changing that output format. No S3 returns 400, invalid/empty uploads return 400, oversized uploads 413, non-POST methods 405, and storage failures 500. Uploads create S3 objects; do not retry automatically.
+
+`upload_image` returns text instructions only and does not upload the file itself. HTTP local-path errors point back to this tool and `/upload` so the agent can recover by uploading and using the returned URL. Never substitute a server-side path for a client file.

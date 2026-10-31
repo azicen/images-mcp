@@ -221,7 +221,10 @@ func (s *service) loadImage(ctx context.Context, ref string, allowFile bool) ([]
 		b, err = decodeBase64(encoded)
 	default:
 		b, err = decodeBase64(ref)
-		if err != nil && allowFile {
+		if err != nil && allowFile && s.config.file.Server.Transport == "http" && looksLikeLocalPath(ref) {
+			return nil, "", fmt.Errorf("cannot access local file path %q in HTTP mode: remote server has no access to client local filesystem. Please upload the image via POST /upload (or call upload_image tool for instructions) and use the returned URL in input_images", ref)
+		}
+		if err != nil && allowFile && s.config.file.Server.Transport != "http" {
 			f, openErr := os.Open(ref)
 			if openErr != nil {
 				return nil, "", fmt.Errorf("input is neither a readable file nor valid base64")
@@ -295,4 +298,9 @@ func (s *service) saveImage(ctx context.Context, ref string) (imageMetadata, err
 	}
 	metadata.Path = path
 	return metadata, nil
+}
+
+func looksLikeLocalPath(ref string) bool {
+	lower := strings.ToLower(ref)
+	return strings.ContainsAny(ref, `/\`) || strings.HasPrefix(ref, "~") || strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp")
 }

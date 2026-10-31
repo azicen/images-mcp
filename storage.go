@@ -47,12 +47,15 @@ func validateStorageURL(value string) error {
 }
 
 func newObjectStorage(c config) (*objectStorage, error) {
-	if c.file.Server.Transport != "http" || c.outputFormat == "base64" {
+	if c.file.Server.Transport != "http" {
 		return nil, nil
 	}
 	cfg := c.file.S3
 	cfg.Endpoint = firstValue(cfg.Endpoint, os.Getenv("S3_ENDPOINT"), os.Getenv("AWS_ENDPOINT_URL_S3"))
 	cfg.Bucket = firstValue(cfg.Bucket, os.Getenv("S3_BUCKET"))
+	if c.outputFormat == "base64" && cfg.Bucket == "" && cfg.AccessKeyID == "" && cfg.SecretAccessKey == "" && os.Getenv("AWS_ACCESS_KEY_ID") == "" && os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		return nil, nil
+	}
 	cfg.Region = firstValue(cfg.Region, os.Getenv("S3_REGION"), os.Getenv("AWS_REGION"), "us-east-1")
 	cfg.AccessKeyID = firstValue(cfg.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.SecretAccessKey = firstValue(cfg.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))

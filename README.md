@@ -171,3 +171,26 @@ HTTP 的 `file` / `both` 输出必须配置已存在的 S3 桶和完整凭据；
 使用 `output_format: base64` 可省略 S3。stdio 模式使用 `docker run --rm -i --no-healthcheck`（不加 `-t`），挂载同一配置并在镜像名后仅传 `-config /etc/images-mcp/config.yaml`，配置中设置 `server.transport: stdio`；本地文件输出需额外挂载 UID 10001 可写的绝对输出目录。stdio 和非 8080 HTTP 模式不能直接沿用默认 HTTP 健康检查。
 
 本地构建：`docker build -t images-mcp:local .`。GitHub Actions 在 main 推送和 PR 时只测试、构建；`v*` 标签发布版本、主次版本及 `latest` 标签。手动运行默认不推送，勾选 `push` 后发布当前分支标签；手动从版本标签运行时仍遵循标签发布条件。预发布版本的 SemVer 标签遵循 metadata-action 的规则，`v*` 标签仍会更新 `latest`。
+
+
+## HTTP 模式上传本地参考图
+
+Agent SOP：先确认连接模式。stdio 模式直接将本地绝对路径填入 `generate_image.input_images`；HTTP 模式先调用 `upload_image` 获取指引，或在图片所在机器执行以下命令上传，再将返回的 `url` 填入 `generate_image.input_images`。不要在工具参数中生成大段 Base64。
+
+```sh
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "Authorization: Bearer <server_api_key>" \
+  -F "file=@<local_path>"
+
+curl --fail-with-body -X POST "<server_url>/upload" \
+  -H "X-API-Key: <server_api_key>" \
+  -H "Content-Type: image/png" --data-binary "@<local_path>"
+```
+
+```json
+{"url":"https://s3.example.com/images/abc.png","mime_type":"image/png","bytes":1048576}
+```
+
+将占位符替换为实际值；仅在未配置服务密钥时省略鉴权头。`/upload` 接收单张 PNG/JPEG/WebP，最大 32 MiB；支持 multipart 字段 `file` / `image` 或二进制请求体。鉴权与 MCP 一致，支持 Bearer、X-API-Key 和 api_key 查询参数，优先请求头。必须配置 S3；base64 输出模式也可单独配置 S3 以启用上传，不改变生成输出格式。缺少 S3、空文件或无效输入返回 400，超限返回 413，非 POST 返回 405，存储失败返回 500。上传会创建 S3 对象，不自动重试。
+
+`upload_image` 只返回文字指引，不会代替客户端读取或上传文件。HTTP 模式收到本地路径时，错误会明确指向此工具及 `/upload`；Agent 应按指引上传，再使用返回 URL 自愈，禁止改用服务端本地路径冒充客户端文件。

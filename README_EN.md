@@ -85,7 +85,7 @@ Both `base64` and `both` include native MCP ImageContent, JSON text, and structu
 | `list_models` | Discover configured models, guidance, and the default model | `{}` |
 | `generate_image` | Generate or edit images using the global output format | `{"prompt":"A watercolor mountain landscape"}` |
 
-`generate_image` also accepts `model`, `input_images`, and `timeout`. `size` and `quality` apply only to the Images route. Results include `model`, `route`, and each image's `mime_type`, `bytes`, and `path` and/or `base64` according to the global `output_format`.
+`generate_image` also accepts `model`, `input_images`, and `timeout`. `size` and `quality` apply only to the Images route. Results include `model` and `images`, with each image's `mime_type`, `bytes`, and `path` and/or `base64` according to the global `output_format`.
 
 Inputs must be PNG/JPEG/WebP: at most 16 images, 32 MiB each, and 64 MiB total. `list_models` reads configured model entries; it does not query the relay.
 

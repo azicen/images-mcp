@@ -221,7 +221,7 @@ PY
 {"prompt":"水彩风格的山间风景","timeout":"15m"}
 ```
 
-要求：`isError` 不为 `true`；结果包含 `model`、`route`、非空 `images`，每项包含 `mime_type`、正数 `bytes`；`file` 模式包含存在且可读取的绝对 `path`，`base64` 模式仅返回 `base64` 且不落盘，`both` 模式同时返回两者。含 Base64 的模式还返回原生 MCP 图像内容。未配置 `default_model` 时显式传入 `model`。编辑时添加有序 `input_images`；第一张为主图，其余为参考图。仅 Images 路由传入 `size`、`quality`。
+要求：`isError` 不为 `true`；结果包含 `model` 与非空 `images`，每项包含 `mime_type`、正数 `bytes`；`file` 模式包含存在且可读取的绝对 `path`，`base64` 模式仅返回 `base64` 且不落盘，`both` 模式同时返回两者。含 Base64 的模式还返回原生 MCP 图像内容。未配置 `default_model` 时显式传入 `model`。编辑时添加有序 `input_images`；第一张为主图，其余为参考图。仅 Images 路由传入 `size`、`quality`。
 
 ## 步骤 5：排障与自愈矩阵
 

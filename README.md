@@ -85,7 +85,7 @@ output_dir: ""
 | `list_models` | 查看已配置模型、用途及默认模型 | `{}` |
 | `generate_image` | 生成或编辑图片，按全局格式输出 | `{"prompt":"水彩风格的山间风景"}` |
 
-`generate_image` 可传 `model`、`input_images` 和 `timeout`；`size`、`quality` 仅适用于 Images 路由。结果包含 `model`、`route`，以及每张图片的 `mime_type`、`bytes`，并按全局 `output_format` 返回 `path` 或 `base64`（或两者）。
+`generate_image` 可传 `model`、`input_images` 和 `timeout`；`size`、`quality` 仅适用于 Images 路由。结果包含 `model` 与 `images`，每张图片包含 `mime_type`、`bytes`，并按全局 `output_format` 返回 `path` 或 `base64`（或两者）。
 
 输入限 PNG/JPEG/WebP，最多 16 张，每张 32 MiB、合计 64 MiB。`list_models` 只列出配置文件中的模型条目，不查询中转服务。
 

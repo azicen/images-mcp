@@ -26,7 +26,6 @@ type imageMetadata struct {
 }
 type generateOutput struct {
 	Model  string          `json:"model"`
-	Route  string          `json:"route"`
 	Images []imageMetadata `json:"images"`
 }
 type service struct {
@@ -246,7 +245,7 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	if err != nil {
 		return out, err
 	}
-	out = generateOutput{Model: in.Model, Route: endpoint, Images: []imageMetadata{}}
+	out = generateOutput{Model: in.Model, Images: []imageMetadata{}}
 	defer func() {
 		if err != nil {
 			for _, img := range out.Images {

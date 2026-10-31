@@ -389,7 +389,7 @@ func TestMCP(t *testing.T) {
 	}
 	defer cs.Close()
 	list, err := cs.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 3 || list.Tools[0].Name != "generate_image" {
+	if err != nil || len(list.Tools) != 2 || list.Tools[0].Name != "generate_image" || list.Tools[1].Name != "list_models" {
 		t.Fatal(list, err)
 	}
 	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"model": "gpt-image-2.5", "prompt": "draw"}})
@@ -1813,7 +1813,8 @@ func TestUploadEndpoint(t *testing.T) {
 	}
 }
 
-// TestUploadTool covers actual MCP registration and text output for both modes.
+// TestUploadTool covers both registration branches: stdio omits upload_image and rejects calls;
+// HTTP exposes upload_image and returns curl instructions without leaking the server key.
 // HTTP path failures must guide recovery before any filesystem access or relay call.
 func TestUploadTool(t *testing.T) {
 	for _, mode := range []string{"stdio", "http"} {
@@ -1831,16 +1832,31 @@ func TestUploadTool(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer cs.Close()
+			list, err := cs.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasUpload := false
+			for _, tool := range list.Tools {
+				if tool.Name == "upload_image" {
+					hasUpload = true
+				}
+			}
+			if hasUpload != (mode == "http") {
+				t.Fatalf("%s: unexpected tools: %v", mode, list.Tools)
+			}
 			result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "upload_image", Arguments: map[string]any{"filename": "cat.png"}})
+			if mode == "stdio" {
+				if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+					t.Fatalf("expected unknown tool error: %v %v", result, err)
+				}
+				return
+			}
 			if err != nil || result.IsError {
 				t.Fatalf("%v %v", result, err)
 			}
 			text := result.Content[0].(*mcp.TextContent).Text
-			expected := "absolute"
-			if mode == "http" {
-				expected = "POST /upload"
-			}
-			if !strings.Contains(text, expected) || strings.Contains(text, "Bearer secret") {
+			if !strings.Contains(text, "POST /upload") || !strings.Contains(text, `curl -X POST "<server_url>/upload" -H "Authorization: Bearer <server_api_key>" -F "file=@<local_path>"`) || strings.Contains(text, "Bearer secret") {
 				t.Fatal(text)
 			}
 			if mode == "http" {

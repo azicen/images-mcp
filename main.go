@@ -398,9 +398,6 @@ type uploadImageInput struct {
 }
 
 func (s *service) uploadInstructions() string {
-	if s.config.file.Server.Transport != "http" {
-		return "Local stdio mode: pass the local absolute image path directly in generate_image input_images; no upload is required."
-	}
 	instructions := `HTTP mode: upload local reference images to POST /upload using multipart/form-data (field: file or image) or a binary image body. Supported formats: PNG/JPEG/WebP; maximum 32 MiB per image.
 Do not generate large Base64 tool arguments. Run curl on the machine containing the local file, replacing the placeholders with your server URL and local path:
 curl -X POST "<server_url>/upload" -F "file=@<local_path>"
@@ -449,9 +446,11 @@ func newServer(s *service) *mcp.Server {
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "upload_image", Description: "Get instructions and endpoint details for uploading local reference images to S3 when using images-mcp over HTTP. Call this before generate_image if you have local image files."}, func(_ context.Context, _ *mcp.CallToolRequest, _ uploadImageInput) (*mcp.CallToolResult, any, error) {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.uploadInstructions()}}}, nil, nil
-	})
+	if s.config.file.Server.Transport == "http" {
+		mcp.AddTool(server, &mcp.Tool{Name: "upload_image", Description: "Get instructions and endpoint details for uploading local reference images to S3 when using images-mcp over HTTP. Call this before generate_image if you have local image files."}, func(_ context.Context, _ *mcp.CallToolRequest, _ uploadImageInput) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.uploadInstructions()}}}, nil, nil
+		})
+	}
 	return server
 }
 

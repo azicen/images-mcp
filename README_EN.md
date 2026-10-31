@@ -193,4 +193,6 @@ curl --fail-with-body -X POST "<server_url>/upload" \
 
 Replace placeholders with actual values; omit authentication headers only when no server key is configured. `/upload` accepts one PNG/JPEG/WebP image up to 32 MiB, using multipart field `file` or `image`, or a binary body. It shares MCP authentication (Bearer, X-API-Key, or api_key query parameter; prefer headers). S3 is required even when generation uses base64 output; configuring S3 enables uploads without changing that output format. No S3 returns 400, invalid/empty uploads return 400, oversized uploads 413, non-POST methods 405, and storage failures 500. Uploads create S3 objects; do not retry automatically.
 
+`upload_image` is automatically registered and exposed only in HTTP mode; local stdio mode exposes only `generate_image` and `list_models`.
+
 `upload_image` returns text instructions only and does not upload the file itself. HTTP local-path errors point back to this tool and `/upload` so the agent can recover by uploading and using the returned URL. Never substitute a server-side path for a client file.

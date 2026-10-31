@@ -305,4 +305,6 @@ curl --fail-with-body -X POST "<server_url>/upload" \
 
 将占位符替换为实际值；仅在未配置服务密钥时省略鉴权头。`/upload` 接收单张 PNG/JPEG/WebP，最大 32 MiB；支持 multipart 字段 `file` / `image` 或二进制请求体。鉴权与 MCP 一致，支持 Bearer、X-API-Key 和 api_key 查询参数，优先请求头。必须配置 S3；base64 输出模式也可单独配置 S3 以启用上传，不改变生成输出格式。缺少 S3、空文件或无效输入返回 400，超限返回 413，非 POST 返回 405，存储失败返回 500。上传会创建 S3 对象，不自动重试。
 
+`upload_image` 仅在 HTTP 模式下自动注册展示；stdio 本地模式只展示 `generate_image` 与 `list_models`。
+
 `upload_image` 只返回文字指引，不会代替客户端读取或上传文件。HTTP 模式收到本地路径时，错误会明确指向此工具及 `/upload`；Agent 应按指引上传，再使用返回 URL 自愈，禁止改用服务端本地路径冒充客户端文件。

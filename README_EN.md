@@ -1,3 +1,5 @@
+[English](README_EN.md) | [简体中文](README.md)
+
 # images-mcp
 
 A single binary for image generation and editing through explicitly configured Chat and Images APIs, with shared image validation, timeouts and storage.

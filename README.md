@@ -1,3 +1,5 @@
+[English](README_EN.md) | [简体中文](README.md)
+
 # images-mcp
 
 单二进制图片生成与编辑工具，支持 Gemini Chat 与 GPT Image Images 协议。通过配置显式选择协议，统一生成、参考图校验、超时与输出存储。

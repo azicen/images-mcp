@@ -19,4 +19,4 @@ USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["images-mcp"]
-CMD ["-http", ":8080"]
+CMD ["-mode", "server", "-listen", ":8080"]

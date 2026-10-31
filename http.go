@@ -13,80 +13,327 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type serverConfig struct {
-	Transport string `json:"transport,omitempty" yaml:"transport,omitempty"`
-	Listen    string `json:"listen,omitempty" yaml:"listen,omitempty"`
-	APIKey    string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
-	EnableSSE bool   `json:"enable_sse,omitempty" yaml:"enable_sse,omitempty"`
+	Listen string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	APIKey string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+}
+type forwardConfig struct {
+	URL     string `json:"url,omitempty" yaml:"url,omitempty"`
+	APIKey  string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 func firstValue(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
+	for _, v := range values {
+		if v != "" {
+			return v
 		}
 	}
 	return ""
 }
-
 func (c *config) configureServer(opts cliOptions) error {
+	choose := func(name, cli, file string, fallback ...string) string {
+		if opts.set[name] {
+			return cli
+		}
+		return firstValue(append([]string{file}, fallback...)...)
+	}
+	c.file.Mode = choose("mode", opts.mode, c.file.Mode, os.Getenv("IMAGES_MCP_MODE"), "standalone")
 	s := &c.file.Server
-	s.Transport = strings.ToLower(firstValue(s.Transport, os.Getenv("MCP_TRANSPORT"), "stdio"))
-	s.Listen = firstValue(s.Listen, os.Getenv("MCP_LISTEN"), ":8080")
-	s.APIKey = firstValue(s.APIKey, os.Getenv("MCP_SERVER_KEY"), os.Getenv("SERVER_API_KEY"))
-	if opts.httpSet {
-		s.Transport, s.Listen = "http", opts.httpAddress
-	}
-	if opts.keySet {
-		s.APIKey = opts.serverKey
-	}
-	if s.Transport != "stdio" && s.Transport != "http" {
-		return fmt.Errorf("server.transport must be stdio or http")
+	s.Listen = choose("listen", opts.listen, s.Listen, os.Getenv("MCP_LISTEN"), ":8080")
+	s.APIKey = choose("server-key", opts.serverKey, s.APIKey, os.Getenv("MCP_SERVER_KEY"), os.Getenv("SERVER_API_KEY"))
+	f := &c.file.Forward
+	f.URL = strings.TrimRight(choose("forward-url", opts.forwardURL, f.URL, os.Getenv("IMAGES_MCP_FORWARD_URL")), "/")
+	f.APIKey = choose("forward-key", opts.forwardKey, f.APIKey, os.Getenv("IMAGES_MCP_FORWARD_KEY"), os.Getenv("FORWARD_KEY"), os.Getenv("MCP_FORWARD_KEY"))
+	f.Timeout = choose("forward-timeout", opts.forwardTimeout, f.Timeout, os.Getenv("IMAGES_MCP_FORWARD_TIMEOUT"), "15m")
+	switch c.file.Mode {
+	case "standalone":
+	case "server":
+		if strings.TrimSpace(s.Listen) == "" {
+			return fmt.Errorf("listen must not be empty")
+		}
+	case "forward":
+		if err := validateStorageURL(f.URL); err != nil {
+			return fmt.Errorf("forward.url: %w", err)
+		}
+		if _, err := parseTimeout(f.Timeout); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("mode must be standalone, server, or forward")
 	}
 	return nil
 }
-
+func respond(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+func failHTTP(w http.ResponseWriter, status int, err error) {
+	respond(w, status, map[string]string{"error": err.Error()})
+}
 func authorize(key string, next http.Handler) http.Handler {
 	expected := sha256.Sum256([]byte(key))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := ""
+		token := r.Header.Get("X-API-Key")
 		if fields := strings.Fields(r.Header.Get("Authorization")); len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
 			token = fields[1]
 		}
-		token = firstValue(token, r.Header.Get("X-API-Key"), r.URL.Query().Get("api_key"))
 		actual := sha256.Sum256([]byte(token))
-		if key != "" && (token == "" || subtle.ConstantTimeCompare(expected[:], actual[:]) != 1) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		if key != "" && subtle.ConstantTimeCompare(expected[:], actual[:]) != 1 {
+			failHTTP(w, 401, fmt.Errorf("unauthorized"))
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
-
+func method(w http.ResponseWriter, r *http.Request, want string) bool {
+	if r.Method == want {
+		return true
+	}
+	w.Header().Set("Allow", want)
+	failHTTP(w, 405, fmt.Errorf("method must be %s", want))
+	return false
+}
 func newHTTPHandler(s *service) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/upload", authorize(s.config.file.Server.APIKey, http.HandlerFunc(s.handleUpload)))
-	server := newServer(s)
-	getServer := func(_ *http.Request) *mcp.Server { return server }
-	mux.Handle("/mcp", authorize(s.config.file.Server.APIKey, mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{MaxRequestBodyBytes: 96 << 20})))
-	if s.config.file.Server.EnableSSE {
-		handler := authorize(s.config.file.Server.APIKey, mcp.NewSSEHandler(getServer, &mcp.SSEOptions{MaxRequestBodyBytes: 96 << 20}))
-		mux.Handle("/sse", handler)
-		mux.Handle("/sse/", handler)
-	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		if method(w, r, "GET") {
+			respond(w, 200, map[string]string{"status": "ok"})
+		}
 	})
+	mux.Handle("/v1/models", authorize(s.config.file.Server.APIKey, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, "GET") {
+			return
+		}
+		models, err := s.config.listModels()
+		if err != nil {
+			failHTTP(w, 500, err)
+			return
+		}
+		respond(w, 200, models)
+	})))
+	mux.Handle("/v1/generate", authorize(s.config.file.Server.APIKey, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, "POST") {
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 96<<20)
+		defer r.Body.Close()
+		in, err := decodeREST(r)
+		if err == nil {
+			in, err = s.config.defaultInput(in)
+		}
+		if err == nil {
+			_, err = s.config.route(in)
+		}
+		var budget time.Duration
+		if err == nil {
+			budget, err = s.config.resolveTimeout(in)
+		}
+		if err != nil {
+			status := 400
+			var size *http.MaxBytesError
+			if errors.As(err, &size) || errors.Is(err, errInputSize) {
+				status = 413
+			}
+			failHTTP(w, status, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), budget)
+		defer cancel()
+		loaded, loadErr := s.loadInputImages(ctx, in)
+		if loadErr != nil {
+			status := 400
+			if errors.Is(loadErr, errInputSize) || strings.Contains(loadErr.Error(), "exceed") {
+				status = 413
+			}
+			failHTTP(w, status, loadErr)
+			return
+		}
+		sources, _ := in.normalizedInputImages()
+		in.prepared = make(map[string]inputImage, len(sources))
+		for i, source := range sources {
+			in.prepared[source.ref] = loaded[i]
+		}
+		out, err := s.generate(ctx, in)
+		if err != nil {
+			failHTTP(w, 500, err)
+			return
+		}
+		respond(w, 200, out)
+	})))
 	return mux
 }
 
+var errInputSize = errors.New("input exceeds size limit")
+
+// restInput deliberately excludes relay credentials and protocol overrides.
+type restInput struct {
+	Prompt      string   `json:"prompt"`
+	Model       string   `json:"model,omitempty"`
+	Size        string   `json:"size,omitempty"`
+	Quality     string   `json:"quality,omitempty"`
+	Timeout     string   `json:"timeout,omitempty"`
+	InputImages []string `json:"input_images,omitempty"`
+}
+
+func publicInput(in generateInput) restInput {
+	return restInput{in.Prompt, in.Model, in.Size, in.Quality, in.Timeout, in.InputImages}
+}
+func decodePublic(reader io.Reader) (generateInput, error) {
+	var in restInput
+	d := json.NewDecoder(reader)
+	d.DisallowUnknownFields()
+	if err := d.Decode(&in); err != nil {
+		return generateInput{}, err
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return generateInput{}, fmt.Errorf("expected one JSON object")
+	}
+	return generateInput{Prompt: in.Prompt, Model: in.Model, Size: in.Size, Quality: in.Quality, Timeout: in.Timeout, InputImages: in.InputImages}, nil
+}
+func boundedPart(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, errInputSize
+	}
+	return b, nil
+}
+func decodeREST(r *http.Request) (generateInput, error) {
+	var in generateInput
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return in, err
+	}
+	files := map[string]inputImage{}
+	switch media {
+	case "application/json":
+		in, err = decodePublic(r.Body)
+	case "multipart/form-data":
+		mr, e := r.MultipartReader()
+		if e != nil {
+			return in, e
+		}
+		fields := map[string]string{}
+		total := 0
+		fieldBytes := 0
+		for {
+			part, e := mr.NextPart()
+			if e == io.EOF {
+				break
+			}
+			if e != nil {
+				return in, e
+			}
+			name := part.FormName()
+			if name == "" || len(name) > 128 {
+				return in, fmt.Errorf("missing part name")
+			}
+			if _, ok := fields[name]; ok {
+				return in, fmt.Errorf("duplicate field %q", name)
+			}
+			if _, ok := files[name]; ok {
+				return in, fmt.Errorf("duplicate file %q", name)
+			}
+			if part.FileName() != "" {
+				if len(files) >= 16 {
+					return in, fmt.Errorf("at most 16 files")
+				}
+				b, e := boundedPart(part, maxImageBytes)
+				if e != nil {
+					return in, e
+				}
+				total += len(b)
+				if total > maxTotalInputBytes {
+					return in, errInputSize
+				}
+				mt := http.DetectContentType(b)
+				if mt != "image/png" && mt != "image/jpeg" && mt != "image/webp" {
+					return in, fmt.Errorf("unsupported input image MIME")
+				}
+				files[name] = inputImage{b, mt}
+			} else {
+				switch name {
+				case "request", "prompt", "model", "size", "quality", "timeout", "input_images":
+				default:
+					return in, fmt.Errorf("unknown multipart field %q", name)
+				}
+				b, e := boundedPart(part, 1<<20)
+				if e != nil {
+					return in, e
+				}
+				fieldBytes += len(b)
+				if fieldBytes > 1<<20 {
+					return in, errInputSize
+				}
+				fields[name] = string(b)
+			}
+			if e := part.Close(); e != nil {
+				return in, e
+			}
+		}
+		if len(fields) == 0 {
+			return in, fmt.Errorf("missing multipart request fields")
+		}
+		if raw, ok := fields["request"]; ok {
+			if len(fields) != 1 {
+				return in, fmt.Errorf("request cannot be mixed with individual fields")
+			}
+			in, err = decodePublic(strings.NewReader(raw))
+		} else {
+			obj := map[string]any{}
+			for k, v := range fields {
+				if k == "input_images" {
+					var refs []string
+					if e := json.Unmarshal([]byte(v), &refs); e != nil {
+						return in, e
+					}
+					obj[k] = refs
+				} else {
+					obj[k] = v
+				}
+			}
+			b, _ := json.Marshal(obj)
+			in, err = decodePublic(strings.NewReader(string(b)))
+		}
+	default:
+		return in, fmt.Errorf("expected application/json or multipart/form-data")
+	}
+	if err != nil {
+		return in, err
+	}
+	if len(in.InputImages) > 16 {
+		return in, fmt.Errorf("at most 16 input images")
+	}
+	used := map[string]bool{}
+	for _, ref := range in.InputImages {
+		if strings.HasPrefix(ref, "part:") {
+			name := strings.TrimPrefix(ref, "part:")
+			if _, ok := files[name]; !ok {
+				return in, fmt.Errorf("missing file %q", name)
+			}
+			used[name] = true
+			continue
+		}
+		if !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "data:") {
+			return in, fmt.Errorf("local paths are not accepted by REST; use forward mode")
+		}
+	}
+	if len(used) != len(files) {
+		return in, fmt.Errorf("unreferenced multipart file")
+	}
+	in.prepared = map[string]inputImage{}
+	for name, img := range files {
+		in.prepared["part:"+name] = img
+	}
+	return in, nil
+}
 func serveHTTP(ctx context.Context, cfg serverConfig, handler http.Handler) error {
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, BaseContext: nil}
 	done := make(chan struct{})
@@ -111,83 +358,4 @@ func serveHTTP(ctx context.Context, cfg serverConfig, handler http.Handler) erro
 		return nil
 	}
 	return err
-}
-
-// handleUpload streams multipart input without creating temporary files.
-func (s *service) handleUpload(w http.ResponseWriter, r *http.Request) {
-	respond := func(status int, value any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(value)
-	}
-	fail := func(status int, message string) { respond(status, map[string]string{"error": message}) }
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		fail(http.StatusMethodNotAllowed, "method must be POST")
-		return
-	}
-	if s.storage == nil {
-		fail(http.StatusBadRequest, "S3 storage is required for image upload")
-		return
-	}
-	// Allow bounded multipart headers in addition to the image payload.
-	r.Body = http.MaxBytesReader(w, r.Body, maxImageBytes+(1<<20))
-	defer r.Body.Close()
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil {
-		fail(400, "invalid Content-Type")
-		return
-	}
-	var reader io.Reader = r.Body
-	var nextPart func() error
-	if mediaType == "multipart/form-data" {
-		multipartReader, err := r.MultipartReader()
-		if err != nil {
-			fail(400, "invalid multipart form")
-			return
-		}
-		part, err := multipartReader.NextPart()
-		if err != nil {
-			fail(400, "missing image file")
-			return
-		}
-		defer part.Close()
-		if part.FormName() != "file" && part.FormName() != "image" {
-			fail(400, "expected multipart field file or image")
-			return
-		}
-		reader = part
-		nextPart = func() error { _, err := multipartReader.NextPart(); return err }
-	}
-	data, err := io.ReadAll(io.LimitReader(reader, maxImageBytes+1))
-	var sizeErr *http.MaxBytesError
-	if len(data) > maxImageBytes || errors.As(err, &sizeErr) {
-		fail(413, "image exceeds 32 MiB limit")
-		return
-	}
-	if err != nil || len(data) == 0 {
-		fail(400, "empty or invalid image upload")
-		return
-	}
-	if nextPart != nil {
-		if err := nextPart(); err != io.EOF {
-			if errors.As(err, &sizeErr) {
-				fail(413, "image exceeds request limit")
-			} else {
-				fail(400, "expected one complete image file")
-			}
-			return
-		}
-	}
-	mimeType := http.DetectContentType(data)
-	if imageExtension(mimeType) == "" || (mimeType != "image/png" && mimeType != "image/jpeg" && mimeType != "image/webp") {
-		fail(400, "unsupported image MIME (expected PNG, JPEG, or WebP)")
-		return
-	}
-	url, _, err := s.storage.upload(r.Context(), data, mimeType)
-	if err != nil {
-		fail(500, "S3 image upload failed")
-		return
-	}
-	respond(200, map[string]any{"url": url, "mime_type": mimeType, "bytes": len(data)})
 }

@@ -22,6 +22,8 @@ import (
 )
 
 type generateInput struct {
+	prepared map[string]inputImage
+
 	Timeout     string   `json:"timeout,omitempty" jsonschema:"Optional request timeout duration (e.g. 10m, 15m, 600s); overrides model and config defaults"`
 	API         string   `json:"api,omitempty" jsonschema:"Optional API route: gemini or chat; gpt, gpt-image or images; overrides model configuration"`
 	APIType     string   `json:"api_type,omitempty" jsonschema:"Alias for api"`
@@ -70,6 +72,8 @@ type fileModel struct {
 }
 
 type fileConfig struct {
+	Mode         string                     `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Forward      forwardConfig              `json:"forward,omitempty" yaml:"forward,omitempty"`
 	Server       serverConfig               `json:"server,omitempty" yaml:"server,omitempty"`
 	S3           s3Config                   `json:"s3,omitempty" yaml:"s3,omitempty"`
 	OutputFormat string                     `json:"output_format,omitempty" yaml:"output_format,omitempty"`
@@ -82,8 +86,8 @@ type fileConfig struct {
 }
 
 type cliOptions struct {
-	path, httpAddress, serverKey string
-	httpSet, keySet              bool
+	path, mode, listen, serverKey, forwardURL, forwardKey, forwardTimeout string
+	set                                                                   map[string]bool
 }
 
 func parseFlags(args []string, output io.Writer) (string, error) {
@@ -92,37 +96,33 @@ func parseFlags(args []string, output io.Writer) (string, error) {
 }
 
 func parseCLI(args []string, output io.Writer) (cliOptions, error) {
-	var opts cliOptions
+	opts := cliOptions{set: make(map[string]bool)}
 	flags := flag.NewFlagSet("images-mcp", flag.ContinueOnError)
 	flags.SetOutput(output)
-	path := &opts.path
-	flags.StringVar(&opts.httpAddress, "http", "", "enable HTTP MCP at this listen address")
-	flags.StringVar(&opts.serverKey, "server-key", "", "HTTP service access key")
-	flags.StringVar(path, "config", "", "YAML or JSON configuration file")
-	flags.StringVar(path, "c", "", "alias for -config")
+	for _, option := range []struct {
+		name   string
+		target *string
+		help   string
+	}{
+		{"config", &opts.path, "absolute YAML or JSON configuration path"},
+		{"mode", &opts.mode, "standalone, server, or forward"},
+		{"listen", &opts.listen, "REST listen address"},
+		{"server-key", &opts.serverKey, "REST access key"},
+		{"forward-url", &opts.forwardURL, "remote REST base URL"},
+		{"forward-key", &opts.forwardKey, "remote REST access key"},
+		{"forward-timeout", &opts.forwardTimeout, "forward HTTP timeout (default 15m)"},
+	} {
+		flags.StringVar(option.target, option.name, "", option.help)
+	}
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
 	if flags.NArg() != 0 {
 		return opts, fmt.Errorf("unexpected positional arguments")
 	}
-	var configSet bool
-	flags.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "config", "c":
-			configSet = true
-		case "http":
-			opts.httpSet = true
-		case "server-key":
-			opts.keySet = true
-		}
-	})
-	if configSet && strings.TrimSpace(opts.path) == "" {
-		opts.path = ""
-		return opts, fmt.Errorf("configuration path must not be empty")
-	}
-	if opts.httpSet && strings.TrimSpace(opts.httpAddress) == "" {
-		return opts, fmt.Errorf("HTTP listen address must not be empty")
+	flags.Visit(func(f *flag.Flag) { opts.set[f.Name] = true })
+	if opts.set["config"] && (opts.path == "" || !filepath.IsAbs(opts.path)) {
+		return opts, fmt.Errorf("configuration path must be absolute")
 	}
 	return opts, nil
 }
@@ -130,20 +130,10 @@ func parseCLI(args []string, output io.Writer) (cliOptions, error) {
 func loadFileConfig(path string) (fileConfig, error) {
 	var c fileConfig
 	if path == "" {
-		for _, candidate := range []string{"images-mcp.yaml", "images-mcp.yml", "images-mcp.json"} {
-			_, err := os.Stat(candidate)
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return c, fmt.Errorf("inspect configuration %q: %w", candidate, err)
-			}
-			path = candidate
-			break
-		}
-		if path == "" {
-			return c, nil
-		}
+		return c, nil
+	}
+	if !filepath.IsAbs(path) {
+		return c, fmt.Errorf("configuration path must be absolute")
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -200,6 +190,11 @@ func loadConfig(paths ...string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	return generationConfig(file)
+}
+
+func generationConfig(file fileConfig) (config, error) {
+	var err error
 	for _, setting := range []struct{ name, value string }{
 		{"timeout", file.Timeout}, {"default.timeout", file.Default.Timeout},
 	} {
@@ -393,46 +388,14 @@ func (c config) generationDescription() string {
 	return b.String()
 }
 
-type uploadImageInput struct {
-	Filename string `json:"filename,omitempty" jsonschema:"Optional original filename of the local image (e.g. cat.png)"`
-}
-
-func (s *service) uploadInstructions() string {
-	instructions := `HTTP mode: upload local reference images to POST /upload using multipart/form-data (field: file or image) or a binary image body. Supported formats: PNG/JPEG/WebP; maximum 32 MiB per image.
-Do not generate large Base64 tool arguments. Run curl on the machine containing the local file, replacing the placeholders with your server URL and local path:
-curl -X POST "<server_url>/upload" -F "file=@<local_path>"
-A successful upload returns {"url":"https://...","mime_type":"image/png","bytes":1048576}. Put the returned url in generate_image input_images.
-S3 storage must be configured for uploads; uploads are not automatically retried.`
-	if s.config.file.Server.APIKey != "" {
-		instructions += `
-Authentication is required: Authorization: Bearer <server_api_key> or X-API-Key. Use the server key, not the relay key:
-curl -X POST "<server_url>/upload" -H "Authorization: Bearer <server_api_key>" -F "file=@<local_path>"`
-	}
-	if s.storage == nil {
-		instructions += "\nS3 storage is currently unavailable; configure S3 and restart the server before uploading."
-	}
-	return instructions
-}
-
 func newServer(s *service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.3.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.4.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
-		result := &mcp.CallToolResult{}
-		if err == nil {
-			if s.config.outputFormat == "base64" || s.config.outputFormat == "both" {
-				data, marshalErr := json.Marshal(out)
-				if marshalErr != nil {
-					return nil, out, marshalErr
-				}
-				result.Content = append(result.Content, &mcp.TextContent{Text: string(data)})
-			}
-			for _, img := range out.Images {
-				if img.Base64 != "" {
-					result.Content = append(result.Content, &mcp.ImageContent{Data: img.data, MIMEType: img.MIMEType})
-				}
-			}
+		if err != nil {
+			return nil, out, err
 		}
+		result, err := imageToolResult(out)
 		return result, out, err
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -446,11 +409,6 @@ func newServer(s *service) *mcp.Server {
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
 	})
-	if s.config.file.Server.Transport == "http" {
-		mcp.AddTool(server, &mcp.Tool{Name: "upload_image", Description: "Get instructions and endpoint details for uploading local reference images to S3 when using images-mcp over HTTP. Call this before generate_image if you have local image files."}, func(_ context.Context, _ *mcp.CallToolRequest, _ uploadImageInput) (*mcp.CallToolResult, any, error) {
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.uploadInstructions()}}}, nil, nil
-		})
-	}
 	return server
 }
 
@@ -462,13 +420,25 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	c, err := loadConfig(opts.path)
+	raw, err := loadFileConfig(opts.path)
 	if err != nil {
 		return err
 	}
+	c := config{file: raw}
 	if err := c.configureServer(opts); err != nil {
 		return err
 	}
+	if c.file.Mode == "forward" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		return newForwardServer(c.file.Forward).Run(ctx, &mcp.StdioTransport{})
+	}
+	runtime := c.file
+	c, err = generationConfig(raw)
+	if err != nil {
+		return err
+	}
+	c.file.Mode, c.file.Server = runtime.Mode, runtime.Server
 	store, err := newObjectStorage(c)
 	if err != nil {
 		return err
@@ -485,7 +455,7 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	svc := &service{config: c, client: client, storage: store}
-	if c.file.Server.Transport == "http" {
+	if c.file.Mode == "server" {
 		return serveHTTP(ctx, c.file.Server, newHTTPHandler(svc))
 	}
 	err = newServer(svc).Run(ctx, &mcp.StdioTransport{})

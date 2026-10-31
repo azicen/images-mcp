@@ -35,7 +35,14 @@ func (s *service) loadInputImages(ctx context.Context, in generateInput) ([]inpu
 	var images []inputImage
 	total := 0
 	for _, source := range sources {
-		b, mimeType, err := s.loadImage(ctx, source.ref, true)
+		var b []byte
+		var mimeType string
+		var err error
+		if img, ok := in.prepared[source.ref]; ok {
+			b, mimeType = img.data, img.mimeType
+		} else {
+			b, mimeType, err = s.loadImage(ctx, source.ref, true)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", source.source, err)
 		}
@@ -221,10 +228,10 @@ func (s *service) loadImage(ctx context.Context, ref string, allowFile bool) ([]
 		b, err = decodeBase64(encoded)
 	default:
 		b, err = decodeBase64(ref)
-		if err != nil && allowFile && s.config.file.Server.Transport == "http" && looksLikeLocalPath(ref) {
-			return nil, "", fmt.Errorf("cannot access local file path %q in HTTP mode: remote server has no access to client local filesystem. Please upload the image via POST /upload (or call upload_image tool for instructions) and use the returned URL in input_images", ref)
+		if err != nil && allowFile && s.config.file.Mode == "server" && looksLikeLocalPath(ref) {
+			return nil, "", fmt.Errorf("cannot access local file path %q in HTTP mode: remote server has no access to client local filesystem. Use forward mode to send local files transparently", ref)
 		}
-		if err != nil && allowFile && s.config.file.Server.Transport != "http" {
+		if err != nil && allowFile && s.config.file.Mode != "server" {
 			f, openErr := os.Open(ref)
 			if openErr != nil {
 				return nil, "", fmt.Errorf("input is neither a readable file nor valid base64")
@@ -262,7 +269,7 @@ func (s *service) saveImage(ctx context.Context, ref string) (imageMetadata, err
 	if s.config.outputFormat == "base64" {
 		return metadata, nil
 	}
-	if s.config.file.Server.Transport == "http" {
+	if s.config.file.Mode == "server" {
 		if s.storage == nil {
 			return imageMetadata{}, fmt.Errorf("HTTP file output requires S3 storage")
 		}

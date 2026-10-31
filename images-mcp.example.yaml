@@ -1,3 +1,5 @@
+mode: standalone # standalone | server | forward；默认 standalone
+
 # images-mcp 配置文件
 # 文档与说明参考: https://github.com/azicen/images-mcp
 
@@ -16,8 +18,8 @@ output_dir: ""
 
 # 全局默认中转服务地址与 API Key（按需修改）
 default:
-  base_url: https://relay.example/v1
-  api_key: your-default-api-key
+  base_url: "" # OPENAI_BASE_URL
+  api_key: "" # OPENAI_API_KEY
 
 # 精确模型配置与路由说明（会被 list_models 返回并用于智能体提示）
 # api 可选:
@@ -50,22 +52,18 @@ models:
     description: 出图快成本低，适合大批量草稿与缩略图。
     notes: 成本低，适合初期灵感探索与大批量出草图。
 
-families:
-  gemini:
-    base_url: https://gemini-relay.example/v1
-    api_key: your-gemini-api-key
-  gpt-image:
-    base_url: https://gpt-image-relay.example/v1
-    api_key: your-gpt-image-api-key
-
-# 传输配置（默认 stdio）；HTTP 通过 /mcp 接入，/healthz 无需鉴权
+# 如需按家族覆盖，可添加 families；不要保留占位凭据遮蔽 default。
 server:
-  transport: stdio # stdio | http；-http 地址 可覆盖为 HTTP
-  listen: "127.0.0.1:8080" # HTTP 监听地址；MCP_LISTEN 回退
-  api_key: "" # HTTP 服务访问密钥，与中转 API Key 分开；建议通过 MCP_SERVER_KEY 注入
-  enable_sse: false # 可选旧版 SSE /sse，会话 POST 同样需要鉴权
+  listen: ":8080" # MCP_LISTEN
+  api_key: "" # MCP_SERVER_KEY / SERVER_API_KEY，与中转密钥独立
 
-# HTTP + file/both 强制配置 S3；stdio 或 base64 忽略此块
+# forward 不需要 models/default/S3，仅在本地提供 stdio MCP。
+forward:
+  url: "" # IMAGES_MCP_FORWARD_URL，例如 https://images.example.com/prefix
+  api_key: "" # IMAGES_MCP_FORWARD_KEY / FORWARD_KEY / MCP_FORWARD_KEY
+  timeout: 15m # IMAGES_MCP_FORWARD_TIMEOUT；CLI > 文件 > 环境 > 默认
+
+# server + file/both 强制配置 S3；standalone、forward 或 base64 忽略此块
 # 必须填写真实 bucket、完整静态凭据；不会自动建桶或验证远端权限
 s3:
   endpoint: "" # MinIO/RustFS: https://storage.example；R2: https://<account>.r2.cloudflarestorage.com；AWS 可空

@@ -1,6 +1,6 @@
-[English](README_EN.md) | [简体中文](README.md)
-
 # images-mcp
+
+[English](README_EN.md) | [简体中文](README.md)
 
 A single binary for image generation and editing through explicitly configured Chat and Images APIs, with shared image validation, timeouts and storage.
 
@@ -12,7 +12,7 @@ A single binary for image generation and editing through explicitly configured C
 | `server` | REST API | Server calls relay | JSON URLs/Data URIs or multipart files |
 | `forward` | Local stdio MCP | Proxies to server | Reads local files and streams multipart transparently |
 
-Both stdio modes expose exactly `generate_image` and `list_models`. The server has no remote MCP, SSE, upload tool or separate upload endpoint. Legacy `-http`, `-c`, `server.transport` and `enable_sse` have been removed.
+Both stdio modes (standalone and forward) expose `generate_image` and `list_models`; the server mode provides standard RESTful HTTP endpoints.
 
 ## Installation
 

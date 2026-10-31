@@ -1,8 +1,8 @@
-[English](README_EN.md) | [简体中文](README.md)
-
 # images-mcp
 
-单二进制图片生成与编辑工具，支持 Gemini Chat 与 GPT Image Images 协议。通过配置显式选择协议，统一生成、参考图校验、超时与输出存储。
+[English](README_EN.md) | [简体中文](README.md)
+
+单二进制图片生成与编辑工具，支持 Gemini Chat 与 GPT Image 协议。通过配置显式选择协议，统一生成、参考图校验、超时与输出存储。
 
 ## 三种运行模式
 
@@ -12,7 +12,7 @@
 | `server` | REST API | 服务端调用中转 | JSON URL/Data URI 或 multipart 文件 |
 | `forward` | 本地 stdio MCP | 转发到 server | 自动读取本地文件并流式转发，Agent 无需上传 |
 
-stdio 始终只暴露 `generate_image`、`list_models`。server 不提供远程 MCP、SSE、上传工具或独立上传端点；旧 `-http`、`-c`、`server.transport`、`enable_sse` 配置已移除。
+stdio 模式（standalone 与 forward）暴露 `generate_image` 与 `list_models` 工具；server 模式提供标准 RESTful HTTP 接口。
 
 ## 安装与启动
 

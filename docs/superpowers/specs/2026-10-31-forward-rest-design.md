@@ -2,7 +2,7 @@
 
 ## 目标与验收
 
-按用户指定的三种模式重构单二进制：默认 standalone 保持本地 stdio MCP；server 提供普通 REST API；forward 在客户端提供 stdio MCP，并透明读取本地参考图后发送 multipart。删除远程 MCP、SSE、上传工具及独立上传接口，不保留旧运行参数兼容层。外部结果继续隐藏内部 route。
+按用户指定的三种模式重构单二进制：默认 standalone 保持本地 stdio MCP；server 提供普通 REST API；forward 在客户端提供 stdio MCP，并透明读取本地参考图后发送 multipart。外部结果继续隐藏内部 route。
 
 验收包括 `go test -race -cover ./...` 全部通过且覆盖率超过 85%、`go vet ./...`、构建 `bin/images-mcp`。验证仅使用本地模拟中转和 S3，不发起真实计费生成。
 
@@ -40,7 +40,7 @@ multipart 使用有界解析，不写临时参考图；文件字段名由 part:<
 
 ## 测试与文档
 
-保留 standalone 有效测试，替换旧 HTTP MCP/SSE/upload 测试。REST 覆盖探活、模型、两种请求、顺序、S3 URL、认证、格式与预算、错误映射。forward 使用 in-memory MCP transport 连接客户端，结合临时本地图片及模拟 HTTP 服务验证透明 multipart 全链路，补充 JSON、远端错误、取消与配置优先级测试。
+覆盖 standalone、REST 与 forward 三种模式的测试。REST 覆盖探活、模型、两种请求、顺序、S3 URL、认证、格式与预算、错误映射。forward 使用 in-memory MCP transport 连接客户端，结合临时本地图片及模拟 HTTP 服务验证透明 multipart 全链路，补充 JSON、远端错误、取消与配置优先级测试。
 
 同步中英 README、AGENTS、DESIGN、示例 YAML 和 Dockerfile。容器保持 Debian Bookworm Slim 与 UID/GID 10001；默认命令改为 -mode server -listen :8080，保留健康检查。文档明确本地 Agent 只需传本地路径，无需额外上传工具或大段 Base64。
 
@@ -49,5 +49,5 @@ multipart 使用有界解析，不写临时参考图；文件字段名由 part:<
 1. 配置与启动模式分离，明确 standalone/server/forward 的依赖边界。
 2. 替换 REST handler，实现有界 multipart 与统一错误分类。
 3. 实现 forward HTTP 客户端与共享 stdio 工具结果包装。
-4. 替换旧接口测试，补齐安全边界和端到端测试。
+4. 覆盖三种模式接口，补齐安全边界和端到端测试。
 5. 同步部署与文档，执行 race/coverage、vet 和二进制构建。

@@ -1,6 +1,6 @@
 # 架构设计
 
-images-mcp 使用单二进制、共享生成核心和独立传输适配器。完整需求见 [已确认设计](docs/superpowers/specs/2026-10-31-forward-rest-design.md)。旧远程 MCP、SSE、upload 工具和独立上传端点已移除，不保留运行参数兼容层。
+images-mcp 使用单二进制、共享生成核心和独立传输适配器。完整需求见 [已确认设计](docs/superpowers/specs/2026-10-31-forward-rest-design.md)。支持 standalone、server、forward 三种运行模式。
 
 ## 运行结构
 

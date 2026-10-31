@@ -1,6 +1,6 @@
 # images-mcp：Agent 安装、配置与自愈
 
-适用 Codex、Claude Code、Hermes、Cursor、Cline、Roo Code。架构以 [DESIGN.md](DESIGN.md) 与 [已确认设计](docs/superpowers/specs/2026-10-31-forward-rest-design.md) 为准；不保留旧 HTTP MCP/SSE/upload 接口或参数兼容层。
+适用 Codex、Claude Code、Hermes、Cursor、Cline、Roo Code。架构以 [DESIGN.md](DESIGN.md) 与 [已确认设计](docs/superpowers/specs/2026-10-31-forward-rest-design.md) 为准。
 
 ## 硬规则
 

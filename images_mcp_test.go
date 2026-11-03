@@ -740,8 +740,8 @@ func TestModelDiscovery(t *testing.T) {
 	defer relay.Close()
 	c := config{baseURL: relay.URL, apiKey: "secret-key", outputDir: t.TempDir(), file: fileConfig{DefaultModel: "alpha", Models: map[string]fileModel{
 		"gpt-image-zeta": {Description: "Last model"},
-		"gemini-middle":  {Description: "Chat model"},
-		"alpha":          {APIType: "images", Description: "First model", Notes: "Detailed guidelines.\nUse for editing."},
+		"gemini-middle":  {Description: "Chat model", Tags: []string{" multi-image "}},
+		"alpha":          {APIType: "images", Description: "First model", Notes: "Detailed guidelines.\nUse for editing.", Tags: []string{" fast ", "", "editing"}},
 	}}}
 	ctx := context.Background()
 	a, b := mcp.NewInMemoryTransports()
@@ -800,14 +800,14 @@ func TestModelDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []modelRecord{
-		{ID: "alpha", Description: "First model", Notes: c.file.Models["alpha"].Notes, SupportsEdit: true, IsDefault: true},
-		{ID: "gemini-middle", Description: "Chat model", SupportsEdit: true},
+		{ID: "alpha", Description: "First model", Notes: c.file.Models["alpha"].Notes, Tags: []string{"fast", "editing"}, SupportsEdit: true, IsDefault: true},
+		{ID: "gemini-middle", Description: "Chat model", Tags: []string{"multi-image"}, SupportsEdit: true},
 		{ID: "gpt-image-zeta", Description: "Last model", SupportsEdit: true},
 	}
 	if !reflect.DeepEqual(records, want) {
 		t.Fatalf("records = %+v", records)
 	}
-	if strings.Count(content, `"notes"`) != 1 || strings.Contains(content, "secret-key") || strings.Contains(content, `"api"`) || strings.Contains(content, `"api_type"`) {
+	if strings.Count(content, `"tags"`) != 2 || strings.Count(content, `"notes"`) != 1 || strings.Contains(content, "secret-key") || strings.Contains(content, `"api"`) || strings.Contains(content, `"api_type"`) {
 		t.Fatalf("unexpected fields: %s", content)
 	}
 	for _, args := range []map[string]any{{"prompt": "draw"}, {"prompt": "draw", "model": ""}, {"prompt": "draw", "model": "gpt-image-zeta"}} {
@@ -1642,4 +1642,81 @@ func mustGetwd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestModelTagsConfig covers YAML/JSON decoding followed by discovery.
+// Paths: missing/empty tags and all-blank tags produce no tags; valid entries
+// are trimmed and retained. Cases check whitespace filtering, order, omission,
+// and that discovery does not modify the configured slices.
+func TestModelTagsConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields string
+		want   []string
+	}{
+		{"missing", `{}`, nil},
+		{"tags", `{"tags":[" fast ","","\t"," editing\n"]}`, []string{"fast", "editing"}},
+		{"empty-tags", `{"tags":[]}`, nil},
+		{"blank-tags", `{"tags":[" ",""]}`, nil},
+	}
+	for _, format := range []string{"json", "yaml"} {
+		for _, tt := range tests {
+			t.Run(format+"/"+tt.name, func(t *testing.T) {
+				var model map[string]any
+				if err := json.Unmarshal([]byte(tt.fields), &model); err != nil {
+					t.Fatal(err)
+				}
+				model["api"] = "images"
+				body := map[string]any{"models": map[string]any{"custom": model}}
+				var data []byte
+				var err error
+				data, err = json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if format == "yaml" {
+					// Embed the JSON model as a YAML flow mapping so escaped
+					// whitespace remains explicit in the fixture.
+					modelJSON, err := json.Marshal(model)
+					if err != nil {
+						t.Fatal(err)
+					}
+					data = []byte("models:\n  custom: " + string(modelJSON) + "\n")
+				}
+				path := filepath.Join(t.TempDir(), "config."+format)
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				c, err := loadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, err := json.Marshal(c.file.Models)
+				if err != nil {
+					t.Fatal(err)
+				}
+				records, err := c.listModels()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 1 || !reflect.DeepEqual(records[0].Tags, tt.want) {
+					t.Fatalf("records = %+v, want tags %v", records, tt.want)
+				}
+				encoded, err := json.Marshal(records[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(encoded), `"tags"`) != (len(tt.want) > 0) {
+					t.Fatalf("unexpected tags serialization: %s", encoded)
+				}
+				after, err := json.Marshal(c.file.Models)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(before) != string(after) {
+					t.Fatal("discovery mutated configuration")
+				}
+			})
+		}
+	}
 }

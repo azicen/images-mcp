@@ -72,6 +72,21 @@ Generation settings:
 
 YAML does not expand environment variables. Leave credential fields empty to use environment fallback and remove unused family placeholders that would shadow valid defaults. Successful `list_models` only verifies configuration/connectivity, not relay or S3 permissions.
 
+Models accept an optional `tags` string array in YAML/JSON so Agents can recommend and select models by speed, cost, quality, and editing needs. Example (configure model IDs supported by your relay):
+
+```yaml
+models:
+  gemini-3.1-flash-image:
+    api: chat
+    tags: [fast, cost-effective, text-rendering, multi-image, consistency]
+```
+
+Leading/trailing whitespace is trimmed and blank entries are removed, preserving order. `list_models` returns `id`, `description`, optional `notes`, optional `tags`, `supports_edit`, and `is_default`; `tags` is omitted when no valid tags remain. Forward preserves remote model tags, and `GET /v1/models` uses the same record structure.
+
+```json
+[{"id":"gemini-3.1-flash-image","description":"Image model","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
+```
+
 ## Agent clients
 
 Local Codex configuration:

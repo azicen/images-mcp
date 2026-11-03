@@ -169,7 +169,13 @@ args = ["-config", "/absolute/path/images-mcp.yaml", "-mode", "forward"]
 
 执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`、`"$ABS_BIN" -h`。通过宿主或具备初始化握手的 MCP 客户端连接 stdio：先 initialize、notifications/initialized，再 tools/list、tools/call list_models。工具必须恰为 generate_image/list_models，不包含 upload_image。
 
-list_models 返回数组，包含 id、description、可选 notes、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
+list_models 返回数组，包含 id、description、可选 notes、可选 tags（字符串数组，用于 Agent 按标签推荐和选择模型）、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
+
+模型列表结果示例（不表示已验证模型可用）：
+
+```json
+[{"id":"gemini-3.1-flash-image","description":"图片模型","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
+```
 
 Python 3 自动化握手测试如下。在同一 Shell 中执行，使用已验证的 `ABS_BIN`、`ABS_CONFIG`；配置须为 standalone 或 forward。脚本只调用 `list_models`，不生成图片、不验证中转/S3 权限。每次响应等待最多 15 秒（测试上限，可按网络情况调整）；stderr 丢弃以免自动回显敏感诊断信息，失败时退出非零。使用逐行 JSON-RPC，无 Content-Length 头：
 
@@ -248,6 +254,10 @@ try:
         assert isinstance(model.get("supports_edit"), bool)
         assert isinstance(model.get("is_default"), bool)
         assert "notes" not in model or isinstance(model["notes"], str)
+        assert "tags" not in model or (
+            isinstance(model["tags"], list)
+            and all(isinstance(tag, str) for tag in model["tags"])
+        )
     print(json.dumps({"status": "ok", "models": models}, ensure_ascii=False))
 finally:
     proc.stdin.close()

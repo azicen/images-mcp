@@ -62,13 +62,14 @@ type fileCredentials struct {
 }
 
 type fileModel struct {
-	Timeout     string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	API         string `json:"api,omitempty" yaml:"api,omitempty"`
-	APIType     string `json:"api_type,omitempty" yaml:"api_type,omitempty"`
-	BaseURL     string `json:"base_url" yaml:"base_url"`
-	APIKey      string `json:"api_key" yaml:"api_key"`
-	Description string `json:"description" yaml:"description"`
-	Notes       string `json:"notes,omitempty" yaml:"notes,omitempty"`
+	Tags        []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Timeout     string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	API         string   `json:"api,omitempty" yaml:"api,omitempty"`
+	APIType     string   `json:"api_type,omitempty" yaml:"api_type,omitempty"`
+	BaseURL     string   `json:"base_url" yaml:"base_url"`
+	APIKey      string   `json:"api_key" yaml:"api_key"`
+	Description string   `json:"description" yaml:"description"`
+	Notes       string   `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
 
 type fileConfig struct {
@@ -337,11 +338,12 @@ func (c config) resolveCredentials(in generateInput) (credentials, error) {
 }
 
 type modelRecord struct {
-	ID           string `json:"id"`
-	Description  string `json:"description"`
-	Notes        string `json:"notes,omitempty"`
-	SupportsEdit bool   `json:"supports_edit"`
-	IsDefault    bool   `json:"is_default"`
+	ID           string   `json:"id"`
+	Description  string   `json:"description"`
+	Notes        string   `json:"notes,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	SupportsEdit bool     `json:"supports_edit"`
+	IsDefault    bool     `json:"is_default"`
 }
 
 func (c config) modelIDs() []string {
@@ -364,7 +366,13 @@ func (c config) listModels() ([]modelRecord, error) {
 		if family != "gpt-image" && family != "gemini" {
 			return nil, fmt.Errorf("model %q: configure api or api_type", id)
 		}
-		records = append(records, modelRecord{ID: id, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
+		var tags []string
+		for _, tag := range model.Tags {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+		records = append(records, modelRecord{Tags: tags, ID: id, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
 	}
 	return records, nil
 }
@@ -398,7 +406,7 @@ func newServer(s *service) *mcp.Server {
 		result, err := imageToolResult(out)
 		return result, out, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their capabilities, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available image generation models, their capabilities, tags, and guidelines."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		records, err := s.config.listModels()
 		if err != nil {
 			return nil, nil, err

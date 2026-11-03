@@ -180,7 +180,7 @@ func newForwardServer(cfg forwardConfig) *mcp.Server {
 		result, err := imageToolResult(out)
 		return result, out, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available remote image generation models."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "list_models", Description: "List available remote image generation models, tags, and capabilities."}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		var models []modelRecord
 		if err := f.call(ctx, "GET", "/v1/models", "", nil, &models); err != nil {
 			return nil, nil, err

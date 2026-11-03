@@ -72,6 +72,21 @@ forward 仅需远端配置，不初始化中转模型、凭据、输出目录或
 
 YAML 不支持环境变量插值。留空对应字段以使用环境回退；清除遮蔽真实默认凭据的 family 占位配置。`list_models` 仅验证配置与连通性，不证明中转或 S3 凭据有效。
 
+模型可在 YAML/JSON 中设置可选字符串数组 `tags`，帮助 Agent 按速度、成本、画质与编辑需求推荐和选择模型。例如（模型 ID 需按实际中转支持情况配置）：
+
+```yaml
+models:
+  gemini-3.1-flash-image:
+    api: chat
+    tags: [fast, cost-effective, text-rendering, multi-image, consistency]
+```
+
+返回前修剪标签两端空白并过滤空字符串，保留顺序。`list_models` 返回 `id`、`description`、可选 `notes`、可选 `tags`、`supports_edit` 和 `is_default`；无有效标签时省略 `tags`。forward 透传远端模型标签，`GET /v1/models` 使用相同记录结构。
+
+```json
+[{"id":"gemini-3.1-flash-image","description":"图片模型","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
+```
+
 ## Agent 客户端
 
 Codex 本地执行：

@@ -27,27 +27,32 @@ default:
 #   - images (GPT Image 路由, 支持文生图与 multipart 图生图/编辑)
 models:
   gemini-3.1-flash-image:
+    tags: [fast, cost-effective, text-rendering, multi-image, consistency]
     api: chat
     description: 速度快成本低，擅长文字渲染、多图融合与角色一致。
     notes: 极速高性价比；画面排版与文字渲染精准；擅长多图融合与保持角色一致。
 
   gpt-image-2.5-flare:
+    tags: [fast, high-quality, editing, subject-preservation]
     api: images
     description: 极速日常首选，生成快画质高，局部修改精准不走样。
     notes: 速度与画质兼备；局部修图（换衣服、改背景等）对原主体和构图保留最忠实。
 
   gpt-image-2.5-sunburst:
+    tags: [high-detail, photorealistic, fine-tuning, slow]
     api: images
     timeout: 15m  # 适合耗时长的高精度精修
     description: 细节与光影最强，适合高精终稿与复杂精修。
     notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
 
   gpt-image-2.5:
+    tags: [balanced, natural-lighting, transparent-background, editing]
     api: images
     description: 标准通用款，光影自然，支持透明背景。
     notes: 质感自然无塑料感，支持透明背景与常规图文编辑。
 
   gpt-image-2:
+    tags: [fast, budget, draft, thumbnail]
     api: images
     description: 出图快成本低，适合大批量草稿与缩略图。
     notes: 成本低，适合初期灵感探索与大批量出草图。

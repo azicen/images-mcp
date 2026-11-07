@@ -170,7 +170,7 @@ func imageToolResult(out generateOutput) (*mcp.CallToolResult, error) {
 }
 func newForwardServer(cfg forwardConfig) *mcp.Server {
 	f := newForwardClient(cfg)
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.4.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.5.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: "Generate or edit images. Local input_images paths are read and forwarded automatically. Call list_models for available models."}, func(ctx context.Context, _ *mcp.CallToolRequest, in restInput) (*mcp.CallToolResult, generateOutput, error) {
 		input := generateInput{Prompt: in.Prompt, Model: in.Model, Size: in.Size, Quality: in.Quality, Timeout: in.Timeout, InputImages: in.InputImages}
 		out, err := f.generate(ctx, input)

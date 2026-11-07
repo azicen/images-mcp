@@ -83,6 +83,10 @@ models:
 
 返回前修剪标签两端空白并过滤空字符串，保留顺序。`list_models` 返回 `id`、`description`、可选 `notes`、可选 `tags`、`supports_edit` 和 `is_default`；无有效标签时省略 `tags`。forward 透传远端模型标签，`GET /v1/models` 使用相同记录结构。
 
+模型尺寸配置为 `sizes`（预设字符串数组）、`default_size`（默认尺寸）和 `supports_custom_size`（是否接受自定义尺寸，默认 false）。例如 `sizes: [1024x1024, auto]`、`default_size: 1024x1024`、`supports_custom_size: true`。`list_models` 与 `GET /v1/models` 返回这些可选字段：预设去除首尾空白和空项，默认值去除首尾空白，空值及 false 省略。请按实际中转能力配置，示例不代表模型可用性验证。
+
+Images 请求未传 size 或全空白时应用 `default_size`；预设匹配不区分大小写，并规范为配置写法。允许自定义时，`WIDTHxHEIGHT` 的两个正整数自动对齐最近的 16 倍数（中点向上，最小 16），例如 `1920x1080` → `1920x1088`。对齐后单边最多 3840px、长宽比 1:3 至 3:1、总像素 655,360 至 8,294,400（均含边界）。非法格式（如 `16:9`、`4k`）、超限尺寸，或不支持自定义尺寸的模型传入非预设尺寸时，直接报错拒绝，不自动降级为默认尺寸或预设。配置预设与默认值按可信配置使用，不进行自定义尺寸校验。Gemini 忽略 size。尺寸调整和忽略通过 `notice` 提示；quality 与 size 提示用 `; ` 合并，REST、forward、MCP 保留提示，不重试或换模型。
+
 模型可配置 `qualities`（支持的质量档位字符串数组）与 `default_quality`（默认质量字符串），例如 `qualities: [low, medium, high]`、`default_quality: medium`。`list_models` 与 `GET /v1/models` 返回这两个可选字段；返回前修剪首尾空白、过滤空档位，空字段省略。请按实际中转支持情况配置，示例不代表模型已验证可用。
 
 请求 `quality` 选择 Images 质量档位，例如 GPT Image 的 `low/medium/high/auto`、DALL-E 3 的 `standard/hd`。未传或全空白时使用配置默认值；配置有效 `qualities` 时，匹配不区分大小写并规范为配置写法。非法档位自动降级到 `default_quality`，未配默认值则使用首个有效档位；未配有效档位列表时透传调用者的值。Gemini 自动忽略传入的 quality。忽略或降级时生成结果附带 `notice`，REST、forward 与 MCP 均保留提示，不会因此重试或切换模型。

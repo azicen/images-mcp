@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +36,7 @@ func TestRoute(t *testing.T) {
 		{model: "gpt-image-2.5-flare", input: "image", prompt: "edit", want: "/images/edits"},
 		{model: "gpt-image-2.5-sunburst", prompt: "draw", size: "1024x1024", want: "/images/generations"},
 		{model: "unknown", prompt: "draw", bad: true}, {model: "gpt-image", prompt: " ", bad: true},
-		{model: "gemini", prompt: "draw", size: "auto", bad: true},
+		{model: "gemini", prompt: "draw", size: "auto", want: "/chat/completions"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model+tt.input+tt.size, func(t *testing.T) {
@@ -108,7 +109,7 @@ func TestPayloads(t *testing.T) {
 	for _, model := range []string{"gemini-test", "gpt-image-2.5"} {
 		for _, edit := range []bool{false, true} {
 			t.Run(model+map[bool]string{true: "edit", false: "generate"}[edit], func(t *testing.T) {
-				s := &service{config: config{baseURL: "https://relay.example/v1", apiKey: "key"}, client: http.DefaultClient}
+				s := &service{config: config{baseURL: "https://relay.example/v1", apiKey: "key", file: fileConfig{Models: map[string]fileModel{model: {Sizes: []string{"1024x1024"}}}}}, client: http.DefaultClient}
 				in := generateInput{Model: model, Prompt: "draw"}
 				if edit {
 					in.InputImages = []string{"data:image/png;base64," + testPNG}
@@ -1926,13 +1927,16 @@ func TestQualityForwardTransport(t *testing.T) {
 			t.Error(err)
 			return
 		}
+		if payload["size"] != "1920x1088" {
+			t.Errorf("size = %v", payload["size"])
+		}
 		if payload["quality"] != "medium" {
 			t.Errorf("quality = %v", payload["quality"])
 		}
 		_, _ = io.WriteString(w, `{"data":[{"b64_json":"`+testPNG+`"}]}`)
 	}))
 	defer relay.Close()
-	c := config{baseURL: relay.URL, apiKey: "local-test", outputFormat: "base64", file: fileConfig{Mode: "server", DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: "images", Qualities: []string{"low", "medium"}, DefaultQuality: "medium"}}}}
+	c := config{baseURL: relay.URL, apiKey: "local-test", outputFormat: "base64", file: fileConfig{Mode: "server", DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: "images", Qualities: []string{"low", "medium"}, DefaultQuality: "medium", Sizes: []string{" ", " 1024x1024 "}, DefaultSize: " 1024x1024 ", SupportsCustomSize: true}}}}
 	host := httptest.NewServer(newHTTPHandler(&service{config: c, client: relay.Client()}))
 	defer host.Close()
 	ctx := context.Background()
@@ -1955,10 +1959,10 @@ func TestQualityForwardTransport(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &records); err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || !reflect.DeepEqual(records[0].Qualities, []string{"low", "medium"}) || records[0].DefaultQuality != "medium" {
+	if len(records) != 1 || !reflect.DeepEqual(records[0].Qualities, []string{"low", "medium"}) || records[0].DefaultQuality != "medium" || !reflect.DeepEqual(records[0].Sizes, []string{"1024x1024"}) || records[0].DefaultSize != "1024x1024" || !records[0].SupportsCustomSize {
 		t.Fatal(records)
 	}
-	result, err = client.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"prompt": "draw", "quality": "hd"}})
+	result, err = client.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"prompt": "draw", "quality": "hd", "size": "1920x1080"}})
 	if err != nil || result.IsError {
 		t.Fatalf("generate_image: %v, %v", result, err)
 	}
@@ -1966,7 +1970,7 @@ func TestQualityForwardTransport(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Notice, `quality "hd" is not supported`) || len(out.Images) != 1 || calls != 1 {
+	if !strings.Contains(out.Notice, `quality "hd" is not supported`) || !strings.Contains(out.Notice, `; size "1920x1080" adjusted to "1920x1088"`) || len(out.Images) != 1 || calls != 1 {
 		t.Fatalf("out = %+v, calls = %d", out, calls)
 	}
 	structured, err := json.Marshal(result.StructuredContent)
@@ -1991,5 +1995,217 @@ func TestQualityFamilyErrors(t *testing.T) {
 	}
 	if _, err := s.generate(context.Background(), generateInput{Prompt: "draw"}); err == nil {
 		t.Fatal("generate accepted invalid API")
+	}
+}
+
+// TestResolveSize covers family errors/ignoring, defaults, preset normalization,
+// snapping, and explicit format/bounds errors with/without configured defaults.
+// Each row checks the effective size, notice branch, and resolver error condition.
+func TestResolveSize(t *testing.T) {
+	tests := []struct {
+		name, api, size, def, want, notice, errorText string
+		sizes                                         []string
+		custom, bad                                   bool
+	}{
+		{name: "family-error", api: "invalid", bad: true},
+		{name: "unknown", api: "", size: "raw", want: "raw"},
+		{name: "gemini", api: "chat", size: "auto", notice: "ignored size"},
+		{name: "gemini-empty", api: "chat"},
+		{name: "empty-no-default", api: "images", sizes: []string{"1024x1024"}},
+		{name: "default", api: "images", def: " 1024x1024 ", want: "1024x1024"},
+		{name: "blank", api: "images", size: " ", def: "1024x1024", want: "1024x1024"},
+		{name: "preset", api: "images", size: " AUTO ", sizes: []string{" ", " auto "}, want: "auto"},
+		{name: "preset-dimensions", api: "images", size: "1024x1024", sizes: []string{"1024x1024"}, want: "1024x1024"},
+		{name: "snap", api: "images", size: "1920x1080", custom: true, want: "1920x1088", notice: "adjusted"},
+		{name: "aligned", api: "images", size: "1920x1088", custom: true, want: "1920x1088"},
+		{name: "uppercase", api: "images", size: "1920X1088", custom: true, want: "1920x1088", notice: "adjusted"},
+		{name: "disabled", api: "images", size: "1920x1088", def: "1024x1024", bad: true, errorText: `model "custom" does not support custom size "1920x1088"; supported presets: `},
+		{name: "first", api: "images", size: "4k", sizes: []string{" ", " auto "}, bad: true, errorText: "supported presets: auto"},
+		{name: "no-target", api: "images", size: "4k", bad: true, errorText: "does not support custom size"},
+		{name: "custom-no-target", api: "images", size: "4k", custom: true, bad: true, errorText: "expected WIDTHxHEIGHT"},
+	}
+	sizeError := func(raw string) string {
+		switch raw {
+		case "3848x1024", "1024x3848", "5000x5000", "99999999999999999999999x1024", "18446744073709551615x1024":
+			return "each side must be at most 3840px"
+		case "256x2048", "2048x256", "1x1024", "1024x1":
+			return "aspect ratio must be between 1:3 and 3:1"
+		case "3840x3840", "16x16", "3847x3847", "100x100":
+			return "total pixels must be between 655,360 and 8,294,400"
+		default:
+			return "expected WIDTHxHEIGHT"
+		}
+	}
+	for _, raw := range []string{"16:9", "4k", "invalid", "100x100", "5000x5000", "18446744073709551615x1024", "0x1024", "-1x1024", "1024x0", "1024x-1", "1024x1024junk", "1024x1024x16", "99999999999999999999999x1024", "3848x1024", "1024x3848", "3840x3840", "256x2048", "2048x256", "16x16", "1x1024", "1024x1", "3847x3847"} {
+		tests = append(tests, struct {
+			name, api, size, def, want, notice, errorText string
+			sizes                                         []string
+			custom, bad                                   bool
+		}{name: raw, api: "images", size: raw, def: "1024x1024", bad: true, errorText: sizeError(raw), custom: true})
+	}
+	for _, raw := range []string{"640x1024", "1024x640", "2880x2880", "3840x1280", "1280x3840"} {
+		tests = append(tests, struct {
+			name, api, size, def, want, notice, errorText string
+			sizes                                         []string
+			custom, bad                                   bool
+		}{name: raw, api: "images", size: raw, want: raw, custom: true})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := config{file: fileConfig{Models: map[string]fileModel{"custom": {API: tt.api, Sizes: tt.sizes, DefaultSize: tt.def, SupportsCustomSize: tt.custom}}}}
+			got, notice, err := c.resolveSize(generateInput{Model: "custom", Size: tt.size})
+			if tt.bad {
+				if err == nil || !strings.Contains(err.Error(), tt.errorText) || got.Size != tt.size || notice != "" {
+					t.Fatalf("expected error containing %q without changing size, got %+v notice %q error %v", tt.errorText, got, notice, err)
+				}
+				return
+			}
+			if err != nil || got.Size != tt.want || (tt.notice == "" && notice != "") || !strings.Contains(notice, tt.notice) {
+				t.Fatalf("got size %q notice %q error %v", got.Size, notice, err)
+			}
+		})
+	}
+}
+
+// TestSizeGeneration checks request payloads and successful generation notices
+// for both families and JSON/multipart, covering defaults, snapping and rejection before relay I/O.
+func TestSizeGeneration(t *testing.T) {
+	for _, api := range []string{"images", "chat"} {
+		for _, edit := range []bool{false, true} {
+			for _, size := range []string{"", "1024x1024", "1920x1080", "16:9"} {
+				t.Run(fmt.Sprintf("%s/%t/%s", api, edit, size), func(t *testing.T) {
+					want := "1024x1024"
+					if size == "1920x1080" {
+						want = "1920x1088"
+					}
+					if api == "chat" {
+						want = ""
+					}
+					calls := 0
+					relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls++
+						var got string
+						if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+							if err := r.ParseMultipartForm(1 << 20); err != nil {
+								t.Error(err)
+								return
+							}
+							defer r.MultipartForm.RemoveAll()
+							got = r.FormValue("size")
+						} else {
+							var body map[string]any
+							if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+								t.Error(err)
+								return
+							}
+							got, _ = body["size"].(string)
+						}
+						if got != want {
+							t.Errorf("sent size %q want %q", got, want)
+						}
+						if api == "chat" {
+							_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"data:image/png;base64,`+testPNG+`"}}]}`)
+						} else {
+							_, _ = io.WriteString(w, `{"data":[{"b64_json":"`+testPNG+`"}]}`)
+						}
+					}))
+					defer relay.Close()
+					s := &service{client: relay.Client(), config: config{baseURL: relay.URL, apiKey: "local-test", outputFormat: "base64", file: fileConfig{DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: api, Sizes: []string{"1024x1024"}, DefaultSize: "1024x1024", SupportsCustomSize: true}}}}}
+					in := generateInput{Prompt: "draw", Size: size}
+					if edit {
+						path := filepath.Join(t.TempDir(), "input.png")
+						data, _ := base64.StdEncoding.DecodeString(testPNG)
+						if err := os.WriteFile(path, data, 0600); err != nil {
+							t.Fatal(err)
+						}
+						in.InputImages = []string{path}
+					}
+					out, err := s.generate(context.Background(), in)
+					if api == "images" && size == "16:9" {
+						if err == nil || !strings.Contains(err.Error(), "expected WIDTHxHEIGHT") || calls != 0 {
+							t.Fatalf("expected rejection before relay I/O: out %+v err %v calls %d", out, err, calls)
+						}
+						return
+					}
+					notice := size != "" && (api == "chat" || size != "1024x1024")
+					if err != nil || (out.Notice != "") != notice || calls != 1 {
+						t.Fatalf("out %+v err %v calls %d", out, err, calls)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestSizeDiscovery checks YAML/JSON parsing, trimming, optional field omission,
+// and model discovery via standalone MCP.
+// Both populated and blank configuration branches must retain their semantics.
+func TestSizeDiscovery(t *testing.T) {
+	for _, format := range []string{"yaml", "json"} {
+		for _, blank := range []bool{false, true} {
+			t.Run(format+map[bool]string{true: "/blank", false: "/values"}[blank], func(t *testing.T) {
+				fields := `{"api":"images","sizes":[" 1024x1024 ",""," "," auto "],"default_size":" auto ","supports_custom_size":true}`
+				if blank {
+					fields = `{"api":"images","sizes":[""," "],"default_size":" "}`
+				}
+				data := `{"default_model":"custom","models":{"custom":` + fields + `}}`
+				if format == "yaml" {
+					data = "default_model: custom\nmodels:\n  custom: " + fields + "\n"
+				}
+				path := filepath.Join(t.TempDir(), "config."+format)
+				if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				c, err := loadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				records, err := c.listModels()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 1 {
+					t.Fatal(records)
+				}
+				if blank {
+					if len(records[0].Sizes) != 0 || records[0].DefaultSize != "" || records[0].SupportsCustomSize {
+						t.Fatal(records)
+					}
+				} else if !reflect.DeepEqual(records[0].Sizes, []string{"1024x1024", "auto"}) || records[0].DefaultSize != "auto" || !records[0].SupportsCustomSize {
+					t.Fatal(records)
+				}
+				encoded, err := json.Marshal(records)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{`"sizes"`, `"default_size"`, `"supports_custom_size"`} {
+					if strings.Contains(string(encoded), field) == blank {
+						t.Fatalf("unexpected field %s: %s", field, encoded)
+					}
+				}
+				// Discovery must not modify the model configuration.
+				if c.file.Models["custom"].DefaultSize != map[bool]string{true: " ", false: " auto "}[blank] {
+					t.Fatal("configuration mutated")
+				}
+				serverTransport, clientTransport := mcp.NewInMemoryTransports()
+				session, err := newServer(&service{config: c}).Connect(context.Background(), serverTransport, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer session.Close()
+				client, err := mcp.NewClient(&mcp.Implementation{Name: "quality-test", Version: "1"}, nil).Connect(context.Background(), clientTransport, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer client.Close()
+				result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_models", Arguments: map[string]any{}})
+				if err != nil || result.IsError {
+					t.Fatalf("list_models: %v, %v", result, err)
+				}
+				if result.Content[0].(*mcp.TextContent).Text != string(encoded) {
+					t.Fatal("MCP discovery differs")
+				}
+			})
+		}
 	}
 }

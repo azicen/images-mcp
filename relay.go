@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -79,7 +80,7 @@ func (c config) modelFamily(in generateInput) (string, error) {
 	}
 }
 
-func trimmedQualities(values []string) []string {
+func trimmedStrings(values []string) []string {
 	var qualities []string
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
@@ -103,7 +104,7 @@ func (c config) resolveQuality(in generateInput) (generateInput, string, error) 
 		return in, "", nil
 	}
 	model := c.file.Models[in.Model]
-	qualities := trimmedQualities(model.Qualities)
+	qualities := trimmedStrings(model.Qualities)
 	defaultQuality := strings.TrimSpace(model.DefaultQuality)
 	quality := strings.TrimSpace(in.Quality)
 	if quality == "" {
@@ -129,6 +130,77 @@ func (c config) resolveQuality(in generateInput) (generateInput, string, error) 
 	return in, notice, nil
 }
 
+// resolveSize normalizes configured presets and bounds custom sizes before relay I/O.
+func (c config) resolveSize(in generateInput) (generateInput, string, error) {
+	family, err := c.modelFamily(in)
+	if err != nil {
+		return in, "", err
+	}
+	if family == "gemini" && in.Size != "" {
+		notice := fmt.Sprintf("model %q does not support size setting; ignored size %q", in.Model, in.Size)
+		in.Size = ""
+		return in, notice, nil
+	}
+	if family != "gpt-image" {
+		return in, "", nil
+	}
+	model := c.file.Models[in.Model]
+	sizes := trimmedStrings(model.Sizes)
+	defaultSize := strings.TrimSpace(model.DefaultSize)
+	rawSize := strings.TrimSpace(in.Size)
+	if rawSize == "" {
+		in.Size = defaultSize
+		return in, "", nil
+	}
+	for _, size := range sizes {
+		if strings.EqualFold(rawSize, size) {
+			in.Size = size
+			return in, "", nil
+		}
+	}
+	if !model.SupportsCustomSize {
+		return in, "", fmt.Errorf("model %q does not support custom size %q; supported presets: %s", in.Model, rawSize, strings.Join(sizes, ", "))
+	}
+	snapped, err := snapSize(rawSize)
+	if err != nil {
+		if errors.Is(err, strconv.ErrSyntax) {
+			return in, "", fmt.Errorf("invalid size %q for model %q: expected WIDTHxHEIGHT (e.g. 1536x864) or presets (%s)", rawSize, in.Model, strings.Join(sizes, ", "))
+		}
+		return in, "", fmt.Errorf("invalid size %q for model %q: %w", rawSize, in.Model, err)
+	}
+	in.Size = snapped
+	if snapped != rawSize {
+		return in, fmt.Sprintf("size %q adjusted to %q (aligned to nearest multiple of 16)", rawSize, snapped), nil
+	}
+	return in, "", nil
+}
+
+func snapSize(raw string) (string, error) {
+	width, height, ok := strings.Cut(strings.ToLower(raw), "x")
+	if !ok {
+		return "", strconv.ErrSyntax
+	}
+	w, errW := strconv.ParseUint(width, 10, 64)
+	h, errH := strconv.ParseUint(height, 10, 64)
+	if errors.Is(errW, strconv.ErrSyntax) || errors.Is(errH, strconv.ErrSyntax) || w == 0 || h == 0 {
+		return "", strconv.ErrSyntax
+	}
+	// Check before rounding to avoid overflow; 3847 still rounds down to 3840.
+	if errW != nil || errH != nil || w > 3847 || h > 3847 {
+		return "", fmt.Errorf("each side must be at most 3840px after alignment")
+	}
+	w = max(16, ((w+8)/16)*16)
+	h = max(16, ((h+8)/16)*16)
+	if w > 3*h || h > 3*w {
+		return "", fmt.Errorf("aspect ratio must be between 1:3 and 3:1 after alignment")
+	}
+	total := w * h
+	if total < 655360 || total > 8294400 {
+		return "", fmt.Errorf("total pixels must be between 655,360 and 8,294,400 after alignment")
+	}
+	return fmt.Sprintf("%dx%d", w, h), nil
+}
+
 func route(in generateInput) (string, error) {
 	return (config{}).route(in)
 }
@@ -147,9 +219,6 @@ func (c config) route(in generateInput) (string, error) {
 	}
 	switch family {
 	case "gemini":
-		if in.Size != "" {
-			return "", fmt.Errorf("size is only supported for GPT Image")
-		}
 		return "/chat/completions", nil
 	case "gpt-image":
 		if len(sources) > 0 {
@@ -177,6 +246,10 @@ func (s *service) request(ctx context.Context, in generateInput) (*http.Request,
 		return nil, "", err
 	}
 	in, _, err = s.config.resolveQuality(in)
+	if err != nil {
+		return nil, "", err
+	}
+	in, _, err = s.config.resolveSize(in)
 	if err != nil {
 		return nil, "", err
 	}
@@ -274,11 +347,21 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	if err != nil {
 		return out, err
 	}
-	// Keep the original quality for request to distinguish omitted input from an
-	// explicit value; configured defaults must not undergo a second resolution.
+	// Resolve notices from original input; request resolves each parameter once
+	// so configured defaults do not undergo a second resolution.
 	_, notice, err := s.config.resolveQuality(in)
 	if err != nil {
 		return out, err
+	}
+	_, sizeNotice, err := s.config.resolveSize(in)
+	if err != nil {
+		return out, err
+	}
+	if sizeNotice != "" {
+		if notice != "" {
+			notice += "; "
+		}
+		notice += sizeNotice
 	}
 	timeout, err := s.config.resolveTimeout(in)
 	if err != nil {

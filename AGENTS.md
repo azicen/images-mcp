@@ -169,7 +169,7 @@ args = ["-config", "/absolute/path/images-mcp.yaml", "-mode", "forward"]
 
 执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`、`"$ABS_BIN" -h`。通过宿主或具备初始化握手的 MCP 客户端连接 stdio：先 initialize、notifications/initialized，再 tools/list、tools/call list_models。工具必须恰为 generate_image/list_models，不包含 upload_image。
 
-list_models 返回数组，包含 id、description、可选 notes、可选 tags（字符串数组，用于 Agent 按标签推荐和选择模型）、可选 qualities（质量档位字符串数组）、可选 default_quality（默认质量字符串）、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
+list_models 返回数组，包含 id、description、可选 notes、可选 tags（字符串数组，用于 Agent 按标签推荐和选择模型）、可选 qualities（质量档位字符串数组）、可选 default_quality（默认质量字符串）、可选 sizes（预设尺寸字符串数组）、可选 default_size（默认尺寸字符串）、可选 supports_custom_size（是否接受自定义尺寸，省略表示 false）、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
 
 模型列表结果示例（不表示已验证模型可用）：
 
@@ -254,6 +254,12 @@ try:
         assert isinstance(model.get("supports_edit"), bool)
         assert isinstance(model.get("is_default"), bool)
         assert "notes" not in model or isinstance(model["notes"], str)
+        assert "default_size" not in model or isinstance(model["default_size"], str)
+        assert "supports_custom_size" not in model or isinstance(model["supports_custom_size"], bool)
+        assert "sizes" not in model or (
+            isinstance(model["sizes"], list)
+            and all(isinstance(size, str) for size in model["sizes"])
+        )
         assert "default_quality" not in model or isinstance(model["default_quality"], str)
         assert "qualities" not in model or (
             isinstance(model["qualities"], list)
@@ -296,6 +302,10 @@ curl --fail http://127.0.0.1:8080/healthz
 ```json
 {"prompt":"水彩风格的山间风景","timeout":"15m"}
 ```
+
+模型尺寸配置为 `sizes`（预设字符串数组）、`default_size`（默认尺寸）和 `supports_custom_size`（是否接受自定义尺寸，默认 false）。例如 `sizes: [1024x1024, auto]`、`default_size: 1024x1024`、`supports_custom_size: true`。`list_models` 与 `GET /v1/models` 返回这些可选字段：预设去除首尾空白和空项，默认值去除首尾空白，空值及 false 省略。请按实际中转能力配置，示例不代表模型可用性验证。
+
+Images 请求未传 size 或全空白时应用 `default_size`；预设匹配不区分大小写，并规范为配置写法。允许自定义时，`WIDTHxHEIGHT` 的两个正整数自动对齐最近的 16 倍数（中点向上，最小 16），例如 `1920x1080` → `1920x1088`。对齐后单边最多 3840px、长宽比 1:3 至 3:1、总像素 655,360 至 8,294,400（均含边界）。非法格式（如 `16:9`、`4k`）、超限尺寸，或不支持自定义尺寸的模型传入非预设尺寸时，直接报错拒绝，不自动降级为默认尺寸或预设。配置预设与默认值按可信配置使用，不进行自定义尺寸校验。Gemini 忽略 size。尺寸调整和忽略通过 `notice` 提示；quality 与 size 提示用 `; ` 合并，REST、forward、MCP 保留提示，不重试或换模型。
 
 模型可配置 `qualities`（支持的质量档位字符串数组）与 `default_quality`（默认质量字符串），例如 `qualities: [low, medium, high]`、`default_quality: medium`。`list_models` 与 `GET /v1/models` 返回这两个可选字段；返回前修剪首尾空白、过滤空档位，空字段省略。请按实际中转支持情况配置，示例不代表模型已验证可用。
 

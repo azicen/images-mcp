@@ -173,7 +173,7 @@ var errInputSize = errors.New("input exceeds size limit")
 type restInput struct {
 	Prompt      string   `json:"prompt"`
 	Model       string   `json:"model,omitempty"`
-	Size        string   `json:"size,omitempty"`
+	Size        string   `json:"size,omitempty" jsonschema:"Optional Images size: use presets from list_models. Custom WIDTHxHEIGHT requires supports_custom_size: dimensions align to nearest multiple of 16 (1920x1080 becomes 1920x1088), aspect ratio 1:3 to 3:1, each side at most 3840px, total pixels 655360 to 8294400. Invalid formats, out-of-bounds sizes, and non-preset sizes on models without custom size support return errors without fallback; Gemini ignores size"`
 	Quality     string   `json:"quality,omitempty" jsonschema:"Optional Images quality: GPT Image low/medium/high/auto; DALL-E 3 standard/hd. Configured qualities determine support; unsupported values fall back to default_quality or the first supported quality with a notice. Gemini ignores quality with a notice"`
 	Timeout     string   `json:"timeout,omitempty"`
 	InputImages []string `json:"input_images,omitempty"`

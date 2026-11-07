@@ -33,6 +33,9 @@ models:
     notes: 极速高性价比；画面排版与文字渲染精准；擅长多图融合与保持角色一致。
 
   gpt-image-2.5-flare:
+    sizes: [1024x1024, 1536x1024, 1024x1536, 1536x864, 864x1536, auto]
+    default_size: 1024x1024
+    supports_custom_size: true
     qualities: [low, medium, high]
     default_quality: medium
     tags: [fast, high-quality, editing, subject-preservation]
@@ -41,6 +44,9 @@ models:
     notes: 速度与画质兼备；局部修图（换衣服、改背景等）对原主体和构图保留最忠实。
 
   gpt-image-2.5-sunburst:
+    sizes: [1024x1024, 1536x1024, 1024x1536, 1536x864, 864x1536, auto]
+    default_size: 1024x1024
+    supports_custom_size: true
     qualities: [medium, high]
     default_quality: high
     tags: [high-detail, photorealistic, fine-tuning, slow]
@@ -50,6 +56,9 @@ models:
     notes: 微观细节与光影质感最强，多轮连续修改控制力最高；单次耗时稍长。
 
   gpt-image-2.5:
+    sizes: [1024x1024, 1536x1024, 1024x1536, 1536x864, 864x1536, auto]
+    default_size: 1024x1024
+    supports_custom_size: true
     qualities: [low, medium, high]
     default_quality: medium
     tags: [balanced, natural-lighting, transparent-background, editing]
@@ -58,6 +67,9 @@ models:
     notes: 质感自然无塑料感，支持透明背景与常规图文编辑。
 
   gpt-image-2:
+    sizes: [1024x1024, 1536x1024, 1024x1536, auto]
+    default_size: 1024x1024
+    supports_custom_size: true
     qualities: [low, medium]
     default_quality: low
     tags: [fast, budget, draft, thumbnail]

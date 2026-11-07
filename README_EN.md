@@ -83,6 +83,10 @@ models:
 
 Leading/trailing whitespace is trimmed and blank entries are removed, preserving order. `list_models` returns `id`, `description`, optional `notes`, optional `tags`, `supports_edit`, and `is_default`; `tags` is omitted when no valid tags remain. Forward preserves remote model tags, and `GET /v1/models` uses the same record structure.
 
+Models may configure `qualities` (supported quality strings) and `default_quality` (the default string). Discovery via `list_models` and `GET /v1/models` returns both as optional fields; whitespace is trimmed, blank qualities are removed, and empty fields are omitted. For example, `qualities: [low, medium, high]` with `default_quality: medium`. Configure these for your actual relay; examples do not verify model availability.
+
+Request `quality` selects an Images quality (for example GPT Image `low/medium/high/auto` or DALL-E 3 `standard/hd`). When omitted or blank, the configured default applies. With a nonempty `qualities` list, matching ignores case and uses the configured spelling; an unsupported value falls back to `default_quality`, or the first quality when no default is set. Without a list, a supplied value passes through. Gemini ignores supplied quality. Ignoring or falling back adds a `notice` string to the generation output, preserved by REST, forward, and MCP; it does not trigger retries or switch models.
+
 ```json
 [{"id":"gemini-3.1-flash-image","description":"Image model","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
 ```
@@ -117,7 +121,7 @@ Only run generation when authorized by the user:
 {"prompt":"Preserve the subject and change the background","input_images":["/absolute/path/main.png","/absolute/path/style.jpg"]}
 ```
 
-The first reference is the primary image; later references provide style/context. Forward handles local paths automatically. Only Images models accept `size` and `quality`. Specify `model` when no default is configured. Do not ask the Agent to serialize large Base64 arguments.
+The first reference is the primary image; later references provide style/context. Forward handles local paths automatically. Only Images models accept `size`; `quality` follows the model configuration described above. Specify `model` when no default is configured. Do not ask the Agent to serialize large Base64 arguments.
 
 ## REST API
 

@@ -83,6 +83,10 @@ models:
 
 返回前修剪标签两端空白并过滤空字符串，保留顺序。`list_models` 返回 `id`、`description`、可选 `notes`、可选 `tags`、`supports_edit` 和 `is_default`；无有效标签时省略 `tags`。forward 透传远端模型标签，`GET /v1/models` 使用相同记录结构。
 
+模型可配置 `qualities`（支持的质量档位字符串数组）与 `default_quality`（默认质量字符串），例如 `qualities: [low, medium, high]`、`default_quality: medium`。`list_models` 与 `GET /v1/models` 返回这两个可选字段；返回前修剪首尾空白、过滤空档位，空字段省略。请按实际中转支持情况配置，示例不代表模型已验证可用。
+
+请求 `quality` 选择 Images 质量档位，例如 GPT Image 的 `low/medium/high/auto`、DALL-E 3 的 `standard/hd`。未传或全空白时使用配置默认值；配置有效 `qualities` 时，匹配不区分大小写并规范为配置写法。非法档位自动降级到 `default_quality`，未配默认值则使用首个有效档位；未配有效档位列表时透传调用者的值。Gemini 自动忽略传入的 quality。忽略或降级时生成结果附带 `notice`，REST、forward 与 MCP 均保留提示，不会因此重试或切换模型。
+
 ```json
 [{"id":"gemini-3.1-flash-image","description":"图片模型","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
 ```
@@ -117,7 +121,7 @@ args = ["-mode", "forward", "-forward-url", "https://images.example.com"]
 {"prompt":"保留主体并修改背景","input_images":["/absolute/path/main.png","/absolute/path/style.jpg"]}
 ```
 
-第一张为主图，其余为参考图；forward 自动处理本地路径。仅 Images 协议接受 `size`、`quality`。未配置默认模型时传 `model`。不要让 Agent 序列化大段 Base64。
+第一张为主图，其余为参考图；forward 自动处理本地路径。仅 Images 协议接受 `size`；`quality` 按上述模型配置解析。未配置默认模型时传 `model`。不要让 Agent 序列化大段 Base64。
 
 ## REST API
 

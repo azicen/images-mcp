@@ -169,7 +169,7 @@ args = ["-config", "/absolute/path/images-mcp.yaml", "-mode", "forward"]
 
 执行 `test -x "$ABS_BIN"`、`test -r "$ABS_CONFIG"`、`"$ABS_BIN" -h`。通过宿主或具备初始化握手的 MCP 客户端连接 stdio：先 initialize、notifications/initialized，再 tools/list、tools/call list_models。工具必须恰为 generate_image/list_models，不包含 upload_image。
 
-list_models 返回数组，包含 id、description、可选 notes、可选 tags（字符串数组，用于 Agent 按标签推荐和选择模型）、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
+list_models 返回数组，包含 id、description、可选 notes、可选 tags（字符串数组，用于 Agent 按标签推荐和选择模型）、可选 qualities（质量档位字符串数组）、可选 default_quality（默认质量字符串）、supports_edit、is_default，不包含凭据。逐项核对配置模型与默认模型。forward 会代理远端列表。
 
 模型列表结果示例（不表示已验证模型可用）：
 
@@ -254,6 +254,11 @@ try:
         assert isinstance(model.get("supports_edit"), bool)
         assert isinstance(model.get("is_default"), bool)
         assert "notes" not in model or isinstance(model["notes"], str)
+        assert "default_quality" not in model or isinstance(model["default_quality"], str)
+        assert "qualities" not in model or (
+            isinstance(model["qualities"], list)
+            and all(isinstance(quality, str) for quality in model["qualities"])
+        )
         assert "tags" not in model or (
             isinstance(model["tags"], list)
             and all(isinstance(tag, str) for tag in model["tags"])
@@ -292,7 +297,11 @@ curl --fail http://127.0.0.1:8080/healthz
 {"prompt":"水彩风格的山间风景","timeout":"15m"}
 ```
 
-编辑添加有序 `input_images`：第一张主图，其余参考。standalone/forward 直接使用客户端本地绝对路径，forward 自动读取发送。仅 Images 模型使用 size/quality。未配默认模型时传 model。
+模型可配置 `qualities`（支持的质量档位字符串数组）与 `default_quality`（默认质量字符串），例如 `qualities: [low, medium, high]`、`default_quality: medium`。`list_models` 与 `GET /v1/models` 返回这两个可选字段；返回前修剪首尾空白、过滤空档位，空字段省略。请按实际中转支持情况配置，示例不代表模型已验证可用。
+
+请求 `quality` 选择 Images 质量档位，例如 GPT Image 的 `low/medium/high/auto`、DALL-E 3 的 `standard/hd`。未传或全空白时使用配置默认值；配置有效 `qualities` 时，匹配不区分大小写并规范为配置写法。非法档位自动降级到 `default_quality`，未配默认值则使用首个有效档位；未配有效档位列表时透传调用者的值。Gemini 自动忽略传入的 quality。忽略或降级时生成结果附带 `notice`，REST、forward 与 MCP 均保留提示，不会因此重试或切换模型。
+
+编辑添加有序 `input_images`：第一张主图，其余参考。standalone/forward 直接使用客户端本地绝对路径，forward 自动读取发送。仅 Images 模型使用 size；quality 按上述模型配置解析。未配默认模型时传 model。
 
 工具调用示例（仅在用户授权后执行，使用已配置的默认模型）：
 

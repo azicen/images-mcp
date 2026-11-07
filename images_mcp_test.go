@@ -1720,3 +1720,276 @@ func TestModelTagsConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestQualityResolution covers family errors, Gemini ignore/absence, GPT defaults,
+// case-insensitive matches, fallback with/without defaults, unconfigured lists,
+// whitespace-only input/configuration, and unknown families (left to routing).
+func TestQualityResolution(t *testing.T) {
+	tests := []struct {
+		name, api, quality, defaultQuality string
+		qualities                          []string
+		want, notice                       string
+		bad                                bool
+	}{
+		{name: "family-error", api: "invalid", bad: true},
+		{name: "unknown-family", quality: "high", want: "high"},
+		{name: "gemini-empty", api: "chat"},
+		{name: "gemini-ignore", api: "chat", quality: "high", notice: "ignored quality"},
+		{name: "default", api: "images", defaultQuality: " medium ", want: "medium"},
+		{name: "blank-input", api: "images", quality: " \t", defaultQuality: "medium", want: "medium"},
+		{name: "no-default", api: "images", defaultQuality: " "},
+		{name: "match", api: "images", quality: "high", qualities: []string{"low", "high"}, want: "high"},
+		{name: "case-match", api: "images", quality: " HIGH ", qualities: []string{" ", " High "}, want: "High"},
+		{name: "fallback-default", api: "images", quality: "hd", qualities: []string{"low", "high"}, defaultQuality: " high ", want: "high", notice: "degraded to default quality"},
+		{name: "fallback-first", api: "images", quality: "hd", qualities: []string{" ", " low ", "high"}, want: "low", notice: "supported: low, high"},
+		{name: "no-list", api: "images", quality: " hd ", want: "hd"},
+		{name: "blank-list", api: "images", quality: "hd", qualities: []string{"", " "}, want: "hd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := config{file: fileConfig{Models: map[string]fileModel{"custom": {API: tt.api, Qualities: tt.qualities, DefaultQuality: tt.defaultQuality}}}}
+			got, notice, err := c.resolveQuality(generateInput{Model: "custom", Quality: tt.quality})
+			if (err != nil) != tt.bad || got.Quality != tt.want || (tt.notice == "" && notice != "") || !strings.Contains(notice, tt.notice) {
+				t.Fatalf("resolveQuality = %+v, %q, %v", got, notice, err)
+			}
+		})
+	}
+}
+
+// TestQualityGeneration exercises request and generation independently for chat,
+// JSON Images and multipart edits. Local relay assertions check outgoing quality;
+// output assertions check notice presence/omission and one request per generation.
+func TestQualityGeneration(t *testing.T) {
+	for _, api := range []string{"chat", "images"} {
+		for _, quality := range []string{"", "high", " HIGH ", "invalid"} {
+			for _, edit := range []bool{false, true} {
+				t.Run(api+"/"+quality+map[bool]string{true: "/edit", false: "/generate"}[edit], func(t *testing.T) {
+					want := "medium"
+					notice := false
+					if api == "chat" {
+						want = ""
+						notice = quality != ""
+					} else if strings.EqualFold(strings.TrimSpace(quality), "high") {
+						want = "high"
+					} else {
+						notice = quality != ""
+					}
+					calls := 0
+					relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls++
+						var got string
+						if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+							if err := r.ParseMultipartForm(1 << 20); err != nil {
+								t.Error(err)
+								return
+							}
+							defer r.MultipartForm.RemoveAll()
+							got = r.FormValue("quality")
+						} else {
+							var body map[string]any
+							if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+								t.Error(err)
+								return
+							}
+							got, _ = body["quality"].(string)
+							if api == "chat" {
+								if _, exists := body["quality"]; exists {
+									t.Error("chat sent quality")
+								}
+							}
+						}
+						if got != want {
+							t.Errorf("quality = %q, want %q", got, want)
+						}
+						if api == "chat" {
+							_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"data:image/png;base64,`+testPNG+`"}}]}`)
+						} else {
+							_, _ = io.WriteString(w, `{"data":[{"b64_json":"`+testPNG+`"}]}`)
+						}
+					}))
+					defer relay.Close()
+					s := &service{client: relay.Client(), config: config{baseURL: relay.URL, apiKey: "local-test", outputFormat: "base64", file: fileConfig{DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: api, Qualities: []string{"low", "medium", "high"}, DefaultQuality: "medium"}}}}}
+					in := generateInput{Prompt: "draw", Quality: quality}
+					if edit {
+						in.InputImages = []string{"data:image/png;base64," + testPNG}
+					}
+					req, _, err := s.request(context.Background(), in)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response, err := relay.Client().Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response.Body.Close()
+					out, err := s.generate(context.Background(), in)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (out.Notice != "") != notice || len(out.Images) != 1 || out.Model != "custom" || calls != 2 {
+						t.Fatalf("output = %+v, calls = %d", out, calls)
+					}
+					encoded, err := json.Marshal(out)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(encoded), `"notice"`) != notice {
+						t.Fatalf("notice serialization: %s", encoded)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestQualityDiscovery checks YAML/JSON parsing, trimming, optional field omission,
+// and model discovery via standalone MCP.
+// Both populated and blank configuration branches must retain their semantics.
+func TestQualityDiscovery(t *testing.T) {
+	for _, format := range []string{"yaml", "json"} {
+		for _, blank := range []bool{false, true} {
+			t.Run(format+map[bool]string{true: "/blank", false: "/values"}[blank], func(t *testing.T) {
+				fields := `{"api":"images","qualities":[" low ",""," "," High "],"default_quality":" High "}`
+				if blank {
+					fields = `{"api":"images","qualities":[""," "],"default_quality":" "}`
+				}
+				data := `{"default_model":"custom","models":{"custom":` + fields + `}}`
+				if format == "yaml" {
+					data = "default_model: custom\nmodels:\n  custom: " + fields + "\n"
+				}
+				path := filepath.Join(t.TempDir(), "config."+format)
+				if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				c, err := loadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				records, err := c.listModels()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 1 {
+					t.Fatal(records)
+				}
+				if blank {
+					if len(records[0].Qualities) != 0 || records[0].DefaultQuality != "" {
+						t.Fatal(records)
+					}
+				} else if !reflect.DeepEqual(records[0].Qualities, []string{"low", "High"}) || records[0].DefaultQuality != "High" {
+					t.Fatal(records)
+				}
+				encoded, err := json.Marshal(records)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{`"qualities"`, `"default_quality"`} {
+					if strings.Contains(string(encoded), field) == blank {
+						t.Fatalf("unexpected field %s: %s", field, encoded)
+					}
+				}
+				// Discovery must not modify the model configuration.
+				if c.file.Models["custom"].DefaultQuality != map[bool]string{true: " ", false: " High "}[blank] {
+					t.Fatal("configuration mutated")
+				}
+				serverTransport, clientTransport := mcp.NewInMemoryTransports()
+				session, err := newServer(&service{config: c}).Connect(context.Background(), serverTransport, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer session.Close()
+				client, err := mcp.NewClient(&mcp.Implementation{Name: "quality-test", Version: "1"}, nil).Connect(context.Background(), clientTransport, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer client.Close()
+				result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_models", Arguments: map[string]any{}})
+				if err != nil || result.IsError {
+					t.Fatalf("list_models: %v, %v", result, err)
+				}
+				if result.Content[0].(*mcp.TextContent).Text != string(encoded) {
+					t.Fatal("MCP discovery differs")
+				}
+			})
+		}
+	}
+}
+
+// TestQualityForwardTransport verifies discovery and degradation notices survive
+// REST serialization and forward MCP text/structured output, without retries.
+func TestQualityForwardTransport(t *testing.T) {
+	calls := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			return
+		}
+		if payload["quality"] != "medium" {
+			t.Errorf("quality = %v", payload["quality"])
+		}
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"`+testPNG+`"}]}`)
+	}))
+	defer relay.Close()
+	c := config{baseURL: relay.URL, apiKey: "local-test", outputFormat: "base64", file: fileConfig{Mode: "server", DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: "images", Qualities: []string{"low", "medium"}, DefaultQuality: "medium"}}}}
+	host := httptest.NewServer(newHTTPHandler(&service{config: c, client: relay.Client()}))
+	defer host.Close()
+	ctx := context.Background()
+	a, b := mcp.NewInMemoryTransports()
+	server, err := newForwardServer(forwardConfig{URL: host.URL, Timeout: "1m"}).Connect(ctx, a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := mcp.NewClient(&mcp.Implementation{Name: "quality-test", Version: "1"}, nil).Connect(ctx, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "list_models", Arguments: map[string]any{}})
+	if err != nil || result.IsError {
+		t.Fatalf("list_models: %v, %v", result, err)
+	}
+	var records []modelRecord
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || !reflect.DeepEqual(records[0].Qualities, []string{"low", "medium"}) || records[0].DefaultQuality != "medium" {
+		t.Fatal(records)
+	}
+	result, err = client.CallTool(ctx, &mcp.CallToolParams{Name: "generate_image", Arguments: map[string]any{"prompt": "draw", "quality": "hd"}})
+	if err != nil || result.IsError {
+		t.Fatalf("generate_image: %v, %v", result, err)
+	}
+	var out generateOutput
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Notice, `quality "hd" is not supported`) || len(out.Images) != 1 || calls != 1 {
+		t.Fatalf("out = %+v, calls = %d", out, calls)
+	}
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var structuredOut generateOutput
+	if err := json.Unmarshal(structured, &structuredOut); err != nil {
+		t.Fatal(err)
+	}
+	if structuredOut.Notice != out.Notice {
+		t.Fatalf("structured notice differs: %s", structured)
+	}
+}
+
+// TestQualityFamilyErrors checks that request and generate return resolver errors
+// before contacting a relay when model protocol configuration is invalid.
+func TestQualityFamilyErrors(t *testing.T) {
+	s := &service{config: config{file: fileConfig{DefaultModel: "custom", Models: map[string]fileModel{"custom": {API: "invalid"}}}}}
+	if _, _, err := s.request(context.Background(), generateInput{Prompt: "draw"}); err == nil {
+		t.Fatal("request accepted invalid API")
+	}
+	if _, err := s.generate(context.Background(), generateInput{Prompt: "draw"}); err == nil {
+		t.Fatal("generate accepted invalid API")
+	}
+}

@@ -26,6 +26,7 @@ type imageMetadata struct {
 }
 type generateOutput struct {
 	Model  string          `json:"model"`
+	Notice string          `json:"notice,omitempty"`
 	Images []imageMetadata `json:"images"`
 }
 type service struct {
@@ -78,6 +79,56 @@ func (c config) modelFamily(in generateInput) (string, error) {
 	}
 }
 
+func trimmedQualities(values []string) []string {
+	var qualities []string
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			qualities = append(qualities, value)
+		}
+	}
+	return qualities
+}
+
+func (c config) resolveQuality(in generateInput) (generateInput, string, error) {
+	family, err := c.modelFamily(in)
+	if err != nil {
+		return in, "", err
+	}
+	if family == "gemini" && in.Quality != "" {
+		notice := fmt.Sprintf("model %q does not support quality setting; ignored quality %q", in.Model, in.Quality)
+		in.Quality = ""
+		return in, notice, nil
+	}
+	if family != "gpt-image" {
+		return in, "", nil
+	}
+	model := c.file.Models[in.Model]
+	qualities := trimmedQualities(model.Qualities)
+	defaultQuality := strings.TrimSpace(model.DefaultQuality)
+	quality := strings.TrimSpace(in.Quality)
+	if quality == "" {
+		in.Quality = defaultQuality
+		return in, "", nil
+	}
+	in.Quality = quality
+	if len(qualities) == 0 {
+		return in, "", nil
+	}
+	for _, supported := range qualities {
+		if strings.EqualFold(quality, supported) {
+			in.Quality = supported
+			return in, "", nil
+		}
+	}
+	target := defaultQuality
+	if target == "" {
+		target = qualities[0]
+	}
+	notice := fmt.Sprintf("quality %q is not supported for model %q, degraded to default quality %q (supported: %s)", in.Quality, in.Model, target, strings.Join(qualities, ", "))
+	in.Quality = target
+	return in, notice, nil
+}
+
 func route(in generateInput) (string, error) {
 	return (config{}).route(in)
 }
@@ -96,8 +147,8 @@ func (c config) route(in generateInput) (string, error) {
 	}
 	switch family {
 	case "gemini":
-		if in.Size != "" || in.Quality != "" {
-			return "", fmt.Errorf("size and quality are only supported for GPT Image")
+		if in.Size != "" {
+			return "", fmt.Errorf("size is only supported for GPT Image")
 		}
 		return "/chat/completions", nil
 	case "gpt-image":
@@ -122,6 +173,10 @@ func (c config) defaultInput(in generateInput) (generateInput, error) {
 
 func (s *service) request(ctx context.Context, in generateInput) (*http.Request, string, error) {
 	in, err := s.config.defaultInput(in)
+	if err != nil {
+		return nil, "", err
+	}
+	in, _, err = s.config.resolveQuality(in)
 	if err != nil {
 		return nil, "", err
 	}
@@ -219,6 +274,12 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	if err != nil {
 		return out, err
 	}
+	// Keep the original quality for request to distinguish omitted input from an
+	// explicit value; configured defaults must not undergo a second resolution.
+	_, notice, err := s.config.resolveQuality(in)
+	if err != nil {
+		return out, err
+	}
 	timeout, err := s.config.resolveTimeout(in)
 	if err != nil {
 		return out, err
@@ -245,7 +306,7 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	if err != nil {
 		return out, err
 	}
-	out = generateOutput{Model: in.Model, Images: []imageMetadata{}}
+	out = generateOutput{Model: in.Model, Notice: notice, Images: []imageMetadata{}}
 	defer func() {
 		if err != nil {
 			for _, img := range out.Images {

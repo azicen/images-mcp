@@ -33,7 +33,7 @@ type generateInput struct {
 	Model       string   `json:"model,omitempty" jsonschema:"Optional relay model name; defaults to configured default_model. See tool description and list_models for available models."`
 	InputImages []string `json:"input_images,omitempty" jsonschema:"Input images: local paths, HTTP(S) URLs, Data URIs, or raw Base64; one image for editing, multiple images use the first as primary and the rest as references; max 16 images, PNG/JPEG/WebP only, 32 MiB each and 64 MiB total"`
 	Size        string   `json:"size,omitempty" jsonschema:"Optional GPT Image size"`
-	Quality     string   `json:"quality,omitempty" jsonschema:"Optional GPT Image quality"`
+	Quality     string   `json:"quality,omitempty" jsonschema:"Optional Images quality: GPT Image low/medium/high/auto; DALL-E 3 standard/hd. Configured qualities determine support; unsupported values fall back to default_quality or the first supported quality with a notice. Gemini ignores quality with a notice"`
 }
 
 // normalizedInputImages preserves the primary image and original parameter indices.
@@ -62,14 +62,16 @@ type fileCredentials struct {
 }
 
 type fileModel struct {
-	Tags        []string `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Timeout     string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	API         string   `json:"api,omitempty" yaml:"api,omitempty"`
-	APIType     string   `json:"api_type,omitempty" yaml:"api_type,omitempty"`
-	BaseURL     string   `json:"base_url" yaml:"base_url"`
-	APIKey      string   `json:"api_key" yaml:"api_key"`
-	Description string   `json:"description" yaml:"description"`
-	Notes       string   `json:"notes,omitempty" yaml:"notes,omitempty"`
+	Qualities      []string `json:"qualities,omitempty" yaml:"qualities,omitempty"`
+	DefaultQuality string   `json:"default_quality,omitempty" yaml:"default_quality,omitempty"`
+	Tags           []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Timeout        string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	API            string   `json:"api,omitempty" yaml:"api,omitempty"`
+	APIType        string   `json:"api_type,omitempty" yaml:"api_type,omitempty"`
+	BaseURL        string   `json:"base_url" yaml:"base_url"`
+	APIKey         string   `json:"api_key" yaml:"api_key"`
+	Description    string   `json:"description" yaml:"description"`
+	Notes          string   `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
 
 type fileConfig struct {
@@ -338,12 +340,14 @@ func (c config) resolveCredentials(in generateInput) (credentials, error) {
 }
 
 type modelRecord struct {
-	ID           string   `json:"id"`
-	Description  string   `json:"description"`
-	Notes        string   `json:"notes,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
-	SupportsEdit bool     `json:"supports_edit"`
-	IsDefault    bool     `json:"is_default"`
+	Qualities      []string `json:"qualities,omitempty"`
+	DefaultQuality string   `json:"default_quality,omitempty"`
+	ID             string   `json:"id"`
+	Description    string   `json:"description"`
+	Notes          string   `json:"notes,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	SupportsEdit   bool     `json:"supports_edit"`
+	IsDefault      bool     `json:"is_default"`
 }
 
 func (c config) modelIDs() []string {
@@ -372,7 +376,7 @@ func (c config) listModels() ([]modelRecord, error) {
 				tags = append(tags, tag)
 			}
 		}
-		records = append(records, modelRecord{Tags: tags, ID: id, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
+		records = append(records, modelRecord{Qualities: trimmedQualities(model.Qualities), DefaultQuality: strings.TrimSpace(model.DefaultQuality), Tags: tags, ID: id, Description: model.Description, Notes: model.Notes, SupportsEdit: true, IsDefault: id == c.file.DefaultModel})
 	}
 	return records, nil
 }

@@ -174,7 +174,7 @@ type restInput struct {
 	Prompt      string   `json:"prompt"`
 	Model       string   `json:"model,omitempty"`
 	Size        string   `json:"size,omitempty"`
-	Quality     string   `json:"quality,omitempty"`
+	Quality     string   `json:"quality,omitempty" jsonschema:"Optional Images quality: GPT Image low/medium/high/auto; DALL-E 3 standard/hd. Configured qualities determine support; unsupported values fall back to default_quality or the first supported quality with a notice. Gemini ignores quality with a notice"`
 	Timeout     string   `json:"timeout,omitempty"`
 	InputImages []string `json:"input_images,omitempty"`
 }

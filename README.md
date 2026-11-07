@@ -2,102 +2,84 @@
 
 [English](README_EN.md) | [简体中文](README.md)
 
-单二进制图片生成与编辑工具，支持 Gemini Chat 与 GPT Image 协议。通过配置显式选择协议，统一生成、参考图校验、超时与输出存储。
+让 Claude Code、Cursor、Codex 这类 AI Agent 在对话里直接画图、改图。
 
+ChatGPT 和 Gemini 的网页版可以在聊天里出图，但在 IDE 或终端里用 Claude Code、Claude Desktop、Cursor、Codex 时，Agent 本身画不了图。要配图、换图标、画示意图，只能切到浏览器生成，再下载拖回项目。
 
-> 🤖 **让 AI Agent 帮你自动安装与配置？**
-> 直接将这句提示词发给你的 Agent：
+images-mcp 通过 OpenAI 兼容的中转接入 Gemini 和 GPT 图片模型，这些事在当前对话里就能做完。改图时给出本地图片路径即可，程序会自己读取文件，不用先传到图床。
+
+> 🤖 想让 Agent 帮你安装配置？把这句话发给它：
+>
 > `按照 https://github.com/azicen/images-mcp/blob/main/AGENTS.md 为我安装和配置 images-mcp`
 
-## 文档导航
+## 两种用法
 
-| 文档 | 内容 |
-| --- | --- |
-| [AGENTS.md](AGENTS.md) | 面向 Agent 的自动化安装、配置、验证与排障自愈指南 |
-| [images-mcp.example.yaml](images-mcp.example.yaml) | standalone、forward、server 三种模式的配置模板 |
-| [DESIGN.md](DESIGN.md) | 系统架构、协议边界与设计决策 |
+- **本地直连（standalone，默认）**：适合个人使用。本机进程直接请求中转，图片保存到本地；也可以设为 `base64`，图片只在内存中返回给客户端显示，不写文件。
+- **远程服务 + 本地代理（server + forward）**：适合团队或多台机器。远端 server 统一保管中转 Key，输出文件时把图片存进 S3；Agent 所在机器运行轻量的 forward，由它读取本地参考图并流式发给远端。
 
-## 三种运行模式
+## 快速上手
 
-| mode | 面向 Agent 的接口 | 生成位置 | 参考图 |
-| --- | --- | --- | --- |
-| `standalone`（默认） | 本地 stdio MCP | 本地进程调用中转 | 直接读取本地路径、URL 或 Data URI |
-| `server` | REST API | 服务端调用中转 | JSON URL/Data URI 或 multipart 文件 |
-| `forward` | 本地 stdio MCP | 转发到 server | 自动读取本地文件并流式转发，Agent 无需上传 |
+### 1. 准备中转并安装
 
-stdio 模式（standalone 与 forward）暴露 `generate_image` 与 `list_models` 工具；server 模式提供标准 RESTful HTTP 接口。
+先准备好 OpenAI 兼容中转的 Base URL、API Key，以及中转实际提供的图片模型 ID。
 
-## 安装与启动
+推荐从 [GitHub Releases](https://github.com/azicen/images-mcp/releases) 下载预编译的静态二进制，提供 Windows、Linux、macOS 的 amd64 / arm64 版本。压缩包里的文件名带平台后缀（如 `images-mcp-linux-amd64`），解压后改名为 `images-mcp`（Windows 为 `images-mcp.exe`），放进 PATH，再运行 `images-mcp -h` 确认可用。
 
-需要满足 [go.mod](go.mod) 的 Go 工具链。
+也可以用 Go 安装，或在源码根目录自行构建。工具链版本以 [go.mod](go.mod) 为准（当前为 Go 1.27.1）：
 
 ```sh
 go install github.com/azicen/images-mcp@latest
-# 或在源码目录构建
+```
+
+```sh
 go build -o bin/images-mcp .
 ```
 
-将安装目录加入宿主客户端的 PATH，或使用已验证的二进制绝对路径。`-config` 必须是绝对路径；不传时仅使用环境变量和默认值，不从当前目录发现配置。`-h` 返回帮助并成功退出。
+### 2. 写最小配置
 
-```sh
-images-mcp -mode standalone -config /absolute/path/images-mcp.yaml
-images-mcp -mode server -config /absolute/path/images-mcp.yaml -listen :8080
-images-mcp -mode forward -forward-url https://images.example.com
-```
-
-复制 [images-mcp.example.yaml](images-mcp.example.yaml)，填写真实中转 URL、Key 和实际可用模型 ID；每个模型显式设置 `api: chat` 或 `api: images`。模板中的模型只是配置示例，不代表中转实际支持。禁止将占位凭据用于请求；推荐通过环境变量注入密钥，配置权限设为 `600`。
-
-## 配置与优先级
-
-运行参数优先级：CLI > 配置文件 > 环境变量 > 默认值。
-
-| CLI | YAML | 环境变量 | 默认 |
-| --- | --- | --- | --- |
-| `-mode` | `mode` | `IMAGES_MCP_MODE` | standalone |
-| `-listen` | `server.listen` | `MCP_LISTEN` | :8080 |
-| `-server-key` | `server.api_key` | `MCP_SERVER_KEY` / `SERVER_API_KEY` | 空 |
-| `-forward-url` | `forward.url` | `IMAGES_MCP_FORWARD_URL` | 必填（forward） |
-| `-forward-key` | `forward.api_key` | `IMAGES_MCP_FORWARD_KEY` / `FORWARD_KEY` / `MCP_FORWARD_KEY` | 空 |
-| `-forward-timeout` | `forward.timeout` | `IMAGES_MCP_FORWARD_TIMEOUT` | 15m |
-
-forward 仅需远端配置，不初始化中转模型、凭据、输出目录或 S3。URL 支持部署路径前缀，禁止用户信息、查询参数、片段和跨源重定向。生成不自动重试；调用取消会传播至远端请求。
-
-生成配置：
-
-- 凭据逐项解析：请求 > `models.<id>` > `families.<family>` > 家族环境变量 > `default` > 全局环境变量。REST 和 forward 不接受请求级中转凭据或协议覆盖。
-- 家族环境变量为 `GEMINI_BASE_URL` / `GEMINI_API_KEY`、`GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY`；全局为 `OPENAI_BASE_URL` / `OPENAI_API_KEY`。
-- 超时：请求 `timeout` > 模型 > `default.timeout` > 顶层 `timeout` > `IMAGE_TIMEOUT` > 10m。接受正数 Go duration 或纯秒数字符串。宿主更早的截止时间仍有效。
-- 输出格式全局生效：顶层 `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`。支持 `file`、`base64`、`both`（不区分大小写）。非法值阻止生成进程启动。
-- standalone 的输出目录：`output_dir` > `IMAGE_OUTPUT_DIR` > 系统临时目录；返回绝对本地路径。
-
-YAML 不支持环境变量插值。留空对应字段以使用环境回退；清除遮蔽真实默认凭据的 family 占位配置。`list_models` 仅验证配置与连通性，不证明中转或 S3 凭据有效。
-
-模型可在 YAML/JSON 中设置可选字符串数组 `tags`，帮助 Agent 按速度、成本、画质与编辑需求推荐和选择模型。例如（模型 ID 需按实际中转支持情况配置）：
+新建 `images-mcp.yaml`。把下面的模型 ID 换成你的中转实际支持的模型，`default_model` 也要跟着改。Gemini 用 `api: chat`，GPT 图片模型用 `api: images`。示例里的模型名只是示范，不代表你的中转一定提供。
 
 ```yaml
+mode: standalone
+output_format: file
+default_model: gemini-3.1-flash-image
+timeout: 10m
+default:
+  base_url: "" # 留空时读取 OPENAI_BASE_URL
+  api_key: "" # 留空时读取 OPENAI_API_KEY
 models:
   gemini-3.1-flash-image:
     api: chat
-    tags: [fast, cost-effective, text-rendering, multi-image, consistency]
+    description: 图片生成与编辑
+    tags: [text-rendering, multi-image]
 ```
 
-返回前修剪标签两端空白并过滤空字符串，保留顺序。`list_models` 返回 `id`、`description`、可选 `notes`、可选 `tags`、`supports_edit` 和 `is_default`；无有效标签时省略 `tags`。forward 透传远端模型标签，`GET /v1/models` 使用相同记录结构。
+在启动 Agent 客户端的环境里设置 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。也可以直接把实际值写进配置文件，但要收紧文件权限，且不要提交到仓库。全部选项见 [images-mcp.example.yaml](images-mcp.example.yaml)。
 
-模型尺寸配置为 `sizes`（预设字符串数组）、`default_size`（默认尺寸）和 `supports_custom_size`（是否接受自定义尺寸，默认 false）。例如 `sizes: [1024x1024, auto]`、`default_size: 1024x1024`、`supports_custom_size: true`。`list_models` 与 `GET /v1/models` 返回这些可选字段：预设去除首尾空白和空项，默认值去除首尾空白，空值及 false 省略。请按实际中转能力配置，示例不代表模型可用性验证。
+图片默认写入系统临时目录，返回绝对路径；用 `output_dir` 可以指定保存位置。`output_format` 设为 `base64` 时直接返回图片内容、不写文件，设为 `both` 则两者都返回。
 
-Images 请求未传 size 或全空白时应用 `default_size`；预设匹配不区分大小写，并规范为配置写法。允许自定义时，`WIDTHxHEIGHT` 的两个正整数自动对齐最近的 16 倍数（中点向上，最小 16），例如 `1920x1080` → `1920x1088`。对齐后单边最多 3840px、长宽比 1:3 至 3:1、总像素 655,360 至 8,294,400（均含边界）。非法格式（如 `16:9`、`4k`）、超限尺寸，或不支持自定义尺寸的模型传入非预设尺寸时，直接报错拒绝，不自动降级为默认尺寸或预设。配置预设与默认值按可信配置使用，不进行自定义尺寸校验。Gemini 忽略 size。尺寸调整和忽略通过 `notice` 提示；quality 与 size 提示用 `; ` 合并，REST、forward、MCP 保留提示，不重试或换模型。
+### 3. 接入 Agent 客户端
 
-模型可配置 `qualities`（支持的质量档位字符串数组）与 `default_quality`（默认质量字符串），例如 `qualities: [low, medium, high]`、`default_quality: medium`。`list_models` 与 `GET /v1/models` 返回这两个可选字段；返回前修剪首尾空白、过滤空档位，空字段省略。请按实际中转支持情况配置，示例不代表模型已验证可用。
-
-请求 `quality` 选择 Images 质量档位，例如 GPT Image 的 `low/medium/high/auto`、DALL-E 3 的 `standard/hd`。未传或全空白时使用配置默认值；配置有效 `qualities` 时，匹配不区分大小写并规范为配置写法。非法档位自动降级到 `default_quality`，未配默认值则使用首个有效档位；未配有效档位列表时透传调用者的值。Gemini 自动忽略传入的 quality。忽略或降级时生成结果附带 `notice`，REST、forward 与 MCP 均保留提示，不会因此重试或切换模型。
+Claude Desktop（`claude_desktop_config.json`）、Cursor（`mcp.json`）和 Claude Code（项目里的 `.mcp.json`）都用下面这种 JSON 结构，把条目合并进已有的 `mcpServers`：
 
 ```json
-[{"id":"gemini-3.1-flash-image","description":"图片模型","tags":["fast","text-rendering"],"supports_edit":true,"is_default":true}]
+{
+  "mcpServers": {
+    "images-mcp": {
+      "command": "images-mcp",
+      "args": ["-config", "/absolute/path/images-mcp.yaml"]
+    }
+  }
+}
 ```
 
-## Agent 客户端
+Claude Code 也可以用命令添加：
 
-Codex 本地执行：
+```sh
+claude mcp add images-mcp -- images-mcp -config /absolute/path/images-mcp.yaml
+```
+
+Codex 在 `~/.codex/config.toml` 中添加：
 
 ```toml
 [mcp_servers.images-mcp]
@@ -105,67 +87,58 @@ command = "images-mcp"
 args = ["-config", "/absolute/path/images-mcp.yaml"]
 ```
 
-远端生成时在 Agent 所在机器运行 forward：
+配置路径要换成实际的绝对路径，不能用 `~`。`command` 填客户端 PATH 里能找到的 `images-mcp`；GUI 客户端找不到命令时，改填二进制的绝对路径。其他 MCP 条目保持不动，保存后重启客户端。
 
-```toml
-[mcp_servers.images-mcp]
-command = "images-mcp"
-args = ["-mode", "forward", "-forward-url", "https://images.example.com"]
-```
+### 4. 验证连接
 
-通过宿主环境传入 `IMAGES_MCP_FORWARD_KEY`。Claude Code、Cursor、Cline、Roo Code、Hermes 使用对应 `mcpServers` 的 command/args 条目。保留已有配置，仅更新 images-mcp，修改后重启客户端。不要把 REST URL 当成远程 MCP URL。
+重启后应能看到 `generate_image` 和 `list_models` 两个工具。让 Agent 调用一次 `list_models`，核对模型列表和默认模型是否与配置一致。这一步只说明配置已加载、工具能调通，不代表中转能正常出图，也不检查 S3 权限。
 
-工具调用示例（仅在用户授权生成时执行）：
+之后就可以直接说“给这个项目画个图标”，或者给出一张本地图片的绝对路径，说“保留主体，把背景换成山景”。
+
+## MCP 工具
+
+### generate_image
+
+支持文生图和多图编辑。下面的参数示例都使用配置里的默认模型。
+
+文生图：
 
 ```json
-{"prompt":"水彩风格的山间风景","timeout":"15m"}
+{"prompt":"为天气应用画一个简洁的太阳图标，透明背景"}
 ```
+
+多图参考，第一张是要修改的主图，其余作为风格或内容参考：
 
 ```json
-{"prompt":"保留主体并修改背景","input_images":["/absolute/path/main.png","/absolute/path/style.jpg"]}
+{
+  "prompt": "保留第一张图的主体，采用第二张图的配色与画风",
+  "input_images": ["/absolute/path/subject.png", "/absolute/path/style.jpg"],
+  "timeout": "15m"
+}
 ```
 
-第一张为主图，其余为参考图；forward 自动处理本地路径。仅 Images 协议接受 `size`；`quality` 按上述模型配置解析。未配置默认模型时传 `model`。不要让 Agent 序列化大段 Base64。
+| 参数 | 说明 |
+| --- | --- |
+| `prompt` | 必填，描述要生成或修改的内容 |
+| `model` | 可选，指定已配置的模型；没有设置默认模型时必填 |
+| `input_images` | 可选，有序参考图列表，本地文件用绝对路径，也可以是 HTTP(S) URL；最多 16 张，仅限 PNG / JPEG / WebP |
+| `quality` | 可选，Images 模型的质量档位，可选值看模型配置 |
+| `size` | 可选，Images 模型的预设或自定义尺寸，如 `1024x1024` |
+| `timeout` | 可选，本次请求的超时，如 `15m` |
 
-## REST API
+不传 `quality` / `size` 时使用模型配置的默认值。模型开启 `supports_custom_size` 后，自定义宽高会对齐到最近的 16 的倍数，例如 `1920x1080` 变成 `1920x1088`；对齐后单边不超过 3840px，长宽比在 1:3 到 3:1 之间，总像素在 655,360 到 8,294,400 之间。格式不对、尺寸超限，或模型不允许的尺寸都会直接报错。质量档位不受支持时，按配置回退到默认档位。`api: chat` 模型（如 Gemini）会忽略 `quality` 和 `size`。这些调整都会写在结果的 `notice` 字段里。
 
-| 方法与路径 | 作用 | 鉴权 |
-| --- | --- | --- |
-| `GET /healthz` | `{"status":"ok"}` | 无 |
-| `GET /v1/models` | 模型记录数组 | 有配置 Key 时需要 |
-| `POST /v1/generate` | 生成结果 `model` / `images` | 有配置 Key 时需要 |
+输出为 `file` 或 `both` 时，本地直连返回文件路径，远程服务返回图片 URL；输出含 Base64 时，结果里还会附带 MCP 原生图片内容。生成失败不会自动重试，也不会换模型。
 
-使用 `Authorization: Bearer <service-key>` 或 `X-API-Key`，服务密钥与中转密钥不同。公开部署配置强密钥并使用 HTTPS 反向代理。错误统一为 `{"error":"message"}`：参数/MIME 400、鉴权 401、大小超限 413、方法 405、中转/存储失败 500。
+### list_models
 
-JSON 请求字段为 `prompt`、`model`、`size`、`quality`、`timeout`、`input_images`，拒绝未知字段。REST 普通参考图仅接受 HTTP(S) URL/Data URI，拒绝本地路径。
+无需参数。返回已配置模型的 ID、描述、默认标记和编辑能力，以及可选的 `notes`、`tags`、质量档位与默认质量、预设尺寸与默认尺寸、是否支持自定义尺寸，供 Agent 挑选模型和尺寸。列表直接取自配置，不会去中转查询哪些模型可用。
 
-```sh
-curl --fail-with-body https://images.example.com/v1/generate \
-  -H "Authorization: Bearer $IMAGES_MCP_FORWARD_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"prompt":"水彩山景"}'
-```
+## 远程部署与 Docker
 
-multipart 可使用 `request` JSON 或独立字段（不可混用），独立 `input_images` 为 JSON 数组。通过 `part:<字段名>` 引用文件，按数组顺序恢复，文件传输顺序不影响参考顺序。
+远端使用 `mode: server`，中转和模型配置照旧，另外用 `MCP_SERVER_KEY` 设置服务密钥（与中转 Key 是两回事）。输出为 `file` 或 `both` 时需要一个已存在的 S3 桶和访问凭据，MinIO、RustFS、R2、AWS 等兼容服务都可以；纯 `base64` 输出不需要 S3。具体字段见配置模板里的 `server` 和 `s3` 部分。
 
-```sh
-curl --fail-with-body https://images.example.com/v1/generate \
-  -H "Authorization: Bearer $IMAGES_MCP_FORWARD_KEY" \
-  -F 'request={"prompt":"修改背景","input_images":["part:file_0"]}' \
-  -F 'file_0=@/absolute/path/main.png'
-```
-
-仅 PNG/JPEG/WebP；单图 32 MiB、总图 64 MiB、最多 16 张，请求体 96 MiB。multipart 参数合计最多 1 MiB，逐 part 解析，不写临时参考图；拒绝重复字段、缺失引用和未引用文件。参考图只用于本次生成，不单独上传到 S3。
-
-## S3 与输出
-
-server 的 `file` / `both` 必须在启动前配置 S3 桶和完整静态凭据，绝不返回服务端路径。`images[].url` 为公开/CDN 前缀或预签名 GET URL（默认 24h，最长 168h，临时凭据可能提前过期）。`both` 同时返回 Base64；`base64` 纯内存输出，不初始化 S3、不落盘。forward 不下载生成 URL、不保存生成文件；Base64 结果会恢复原生 MCP 图像内容。
-
-S3 环境回退：`S3_BUCKET`、`S3_ENDPOINT` / `AWS_ENDPOINT_URL_S3`、`S3_REGION` / `AWS_REGION`、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`S3_USE_PATH_STYLE`、`S3_PUBLIC_URL_PREFIX`。配置字段优先。桶需预先存在，权限包括 PutObject/GetObject/DeleteObject；多图失败会清理本次已上传对象并报告删除错误。支持 MinIO/RustFS/R2/AWS，具体字段见模板。
-
-## Docker
-
-运行底包为 Debian Bookworm Slim，UID/GID 为 `10001:10001`。使用已验证、可由该用户读取的绝对配置路径，只读挂载，不把密钥写进镜像。生产固定版本或摘要。
+准备好配置文件和环境变量后启动容器。示例里的主机路径要换成实际路径，且配置文件必须能被容器用户（UID 10001）读取：
 
 ```sh
 docker run -d --name images-mcp --restart unless-stopped \
@@ -173,13 +146,26 @@ docker run -d --name images-mcp --restart unless-stopped \
   --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
   -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
   -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
   ghcr.io/azicen/images-mcp:latest \
   -config /etc/images-mcp/config.yaml -mode server -listen :8080
-curl --fail http://127.0.0.1:8080/healthz
 ```
 
-默认 CMD 为 `-mode server -listen :8080`；传自定义参数会替换整个 CMD，须保留模式与监听地址。配置改变后重建容器、重启客户端。容器 stdio 使用 `-i --no-healthcheck`，不分配 TTY。
+生产环境请固定镜像版本或摘要，并通过 HTTPS 反向代理对外提供服务。探活用 `GET /healthz`。
+
+本地 Agent 的 MCP 条目仍是 `command` / `args` 结构，只需把 `args` 换成：
+
+```json
+["-mode", "forward", "-forward-url", "https://images.example.com"]
+```
+
+示例 URL 换成实际的服务地址，再在客户端环境里用 `IMAGES_MCP_FORWARD_KEY` 传入与服务端相同的服务密钥。本地 forward 不需要中转 Key 或 S3，改图时照样传本地图片路径。server 只提供 REST API，不能直接注册成 MCP，Agent 始终通过本地 forward 以 stdio 方式接入。
+
+## 更多文档
+
+- [AGENTS.md](AGENTS.md)：供 Agent 使用的安装、验证与排障步骤
+- [DESIGN.md](DESIGN.md)：架构设计
+- [images-mcp.example.yaml](images-mcp.example.yaml)：完整配置模板
 
 ## 开发验证
 
@@ -189,4 +175,4 @@ go vet ./...
 go build -o bin/images-mcp .
 ```
 
-测试使用本地模拟中转与 S3，涵盖三种模式、REST 边界及 MCP forward 端到端链路，无真实计费请求。详见 [DESIGN.md](DESIGN.md) 与 [AGENTS.md](AGENTS.md)。
+测试使用本地模拟的中转和 S3，不会调用真实的计费服务。

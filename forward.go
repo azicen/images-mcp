@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -16,13 +16,14 @@ import (
 )
 
 type forwardClient struct {
-	cfg    forwardConfig
-	client *http.Client
+	outputFormat string
+	cfg          forwardConfig
+	client       *http.Client
 }
 
 func newForwardClient(cfg forwardConfig) *forwardClient {
 	timeout, _ := parseTimeout(cfg.Timeout)
-	return &forwardClient{cfg: cfg, client: &http.Client{Timeout: timeout, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &forwardClient{outputFormat: firstValue(cfg.outputFormat, "file"), cfg: cfg, client: &http.Client{Timeout: timeout, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
@@ -43,19 +44,28 @@ func (f *forwardClient) call(ctx context.Context, method, path, contentType stri
 	}
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("forward request: %w", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return fmt.Errorf("forward request failed")
 	}
 	defer resp.Body.Close()
-	b, err := readLimited(resp.Body, 96<<20)
-	if err != nil {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("remote HTTP %d", resp.StatusCode)
+	}
+	if generation, ok := out.(*generateOutput); ok {
+		decoded, err := f.decodeGeneration(ctx, resp)
+		if err == nil {
+			*generation = decoded
+		}
 		return err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var failure struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(b, &failure)
-		return fmt.Errorf("remote HTTP %d: %s", resp.StatusCode, failure.Error)
+	b, err := readLimited(resp.Body, 1<<20)
+	if err != nil {
+		return err
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("decode remote response: %w", err)
@@ -159,18 +169,14 @@ func imageToolResult(out generateOutput) (*mcp.CallToolResult, error) {
 	result := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}
 	for _, img := range out.Images {
 		if img.Base64 != "" {
-			data, err := base64.StdEncoding.DecodeString(img.Base64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid remote image base64: %w", err)
-			}
-			result.Content = append(result.Content, &mcp.ImageContent{Data: data, MIMEType: img.MIMEType})
+			result.Content = append(result.Content, &mcp.ImageContent{Data: img.data, MIMEType: img.MIMEType})
 		}
 	}
 	return result, nil
 }
 func newForwardServer(cfg forwardConfig) *mcp.Server {
 	f := newForwardClient(cfg)
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.5.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.6.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: "Generate or edit images. Local input_images paths are read and forwarded automatically. Call list_models for available models."}, func(ctx context.Context, _ *mcp.CallToolRequest, in restInput) (*mcp.CallToolResult, generateOutput, error) {
 		input := generateInput{Prompt: in.Prompt, Model: in.Model, Size: in.Size, Quality: in.Quality, Timeout: in.Timeout, InputImages: in.InputImages}
 		out, err := f.generate(ctx, input)

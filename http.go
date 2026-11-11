@@ -20,9 +20,11 @@ type serverConfig struct {
 	APIKey string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
 }
 type forwardConfig struct {
-	URL     string `json:"url,omitempty" yaml:"url,omitempty"`
-	APIKey  string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
-	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	outputFormat string
+	outputDir    string
+	URL          string `json:"url,omitempty" yaml:"url,omitempty"`
+	APIKey       string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	Timeout      string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 func firstValue(values ...string) string {
@@ -55,7 +57,15 @@ func (c *config) configureServer(opts cliOptions) error {
 			return fmt.Errorf("listen must not be empty")
 		}
 	case "forward":
-		if err := validateStorageURL(f.URL); err != nil {
+		format, err := parseOutputFormat(c.file)
+		if err != nil {
+			return err
+		}
+		f.outputFormat = format
+		if f.outputDir, err = resolveOutputDir(c.file); err != nil {
+			return err
+		}
+		if err := validateForwardURL(f.URL); err != nil {
 			return fmt.Errorf("forward.url: %w", err)
 		}
 		if _, err := parseTimeout(f.Timeout); err != nil {
@@ -162,7 +172,7 @@ func newHTTPHandler(s *service) http.Handler {
 			failHTTP(w, 500, err)
 			return
 		}
-		respond(w, 200, out)
+		writeGenerationResponse(w, out)
 	})))
 	return mux
 }

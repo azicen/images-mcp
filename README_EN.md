@@ -15,7 +15,7 @@ images-mcp connects your agent to Gemini and GPT image models through an OpenAI-
 ## Two ways to run it
 
 - **Standalone (default)**: best for personal use. A local process calls your relay and saves images to disk. Set the output to `base64` to return images in memory for the client to display, without writing files.
-- **Remote server + local forward (server + forward)**: for teams or multiple machines. The remote server holds the relay keys and, when outputting files, stores images in S3. A lightweight forward process on the agent's machine reads local reference images and streams them to the server.
+- **Remote server + local forward (server + forward)**: for teams or multiple machines. The remote server holds the relay keys and returns images over REST; forward uses its local `output_format` to return files, Base64, or both. A lightweight forward process on the agent's machine reads local reference images and streams them to the server.
 
 ## Quick start
 
@@ -91,7 +91,7 @@ Use the config file's real absolute path; `~` is not expanded. `command` should 
 
 ### 4. Check the connection
 
-After restarting, you should see two tools: `generate_image` and `list_models`. Ask the agent to call `list_models` and check that the models and the default match your config. This only shows that the config loaded and the tools respond; it doesn't prove the relay can generate images or check S3 permissions.
+After restarting, you should see two tools: `generate_image` and `list_models`. Ask the agent to call `list_models` and check that the models and the default match your config. This only shows that the config loaded and the tools respond; it doesn't prove the relay can generate images.
 
 From there, just ask: "Draw an icon for this project," or give the absolute path of a local image and say "Keep the subject and replace the background with mountains."
 
@@ -128,7 +128,7 @@ Multiple references. The first image is the one being edited; the rest serve as 
 
 If `quality` or `size` is omitted, the model's configured default is used. When a model has `supports_custom_size` enabled, custom dimensions are rounded to the nearest multiple of 16, so `1920x1080` becomes `1920x1088`. After rounding, each side must be at most 3840px, the aspect ratio must fall between 1:3 and 3:1, and the total pixel count must be between 655,360 and 8,294,400. Malformed sizes, sizes outside those limits, and sizes the model doesn't allow are rejected with an error. An unsupported quality level falls back to the configured default. `api: chat` models such as Gemini ignore `quality` and `size`. Any of these adjustments is reported in the result's `notice` field.
 
-With `file` or `both` output, standalone returns file paths and the remote server returns image URLs. When the output includes Base64, the result also carries native MCP image content. Failed generations are never retried automatically, and the model is never switched behind your back.
+With `file` or `both` output, standalone and local forward both return local absolute file paths. When the output includes Base64, the result also carries native MCP image content. Failed generations are never retried automatically, and the model is never switched behind your back.
 
 ### list_models
 
@@ -136,7 +136,7 @@ Takes no arguments. Returns each configured model's ID, description, default fla
 
 ## Remote deployment and Docker
 
-On the remote host, use `mode: server` with the same relay and model settings, and set a service key in `MCP_SERVER_KEY` (separate from the relay key). `file` or `both` output needs an existing S3 bucket and credentials; MinIO, RustFS, R2, AWS, and other S3-compatible services work. Pure `base64` output doesn't need S3. See the `server` and `s3` sections of the config template for the fields.
+On the remote host, use `mode: server` with the same relay and model settings, and set a service key in `MCP_SERVER_KEY` (separate from the relay key). The server keeps results in memory. Successful REST image responses always use `multipart/mixed` with raw binary bytes; the server's `output_format` has no effect. Whether the agent gets files, Base64, or both is decided by `output_format` on the forward machine, and files go to its local `output_dir`, falling back to `IMAGE_OUTPUT_DIR` and then the system temporary directory.
 
 Once the config file and environment variables are ready, start the container. Replace the example host path with your own; the config file must be readable by the container user (UID 10001).
 
@@ -145,8 +145,6 @@ docker run -d --name images-mcp --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
   -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
-  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
   ghcr.io/azicen/images-mcp:latest \
   -config /etc/images-mcp/config.yaml -mode server -listen :8080
 ```
@@ -159,12 +157,27 @@ The local agent's MCP entry keeps the same `command` / `args` shape; just replac
 ["-mode", "forward", "-forward-url", "https://images.example.com"]
 ```
 
-Replace the example URL with your server's address, and set `IMAGES_MCP_FORWARD_KEY` in the client environment to the same service key the server uses. The local forward needs no relay key or S3 setup, and you still pass local image paths when editing. The server only speaks REST and can't be registered as an MCP server directly; agents always connect through the local forward over stdio.
+Replace the example URL with your server's address, and set `IMAGES_MCP_FORWARD_KEY` in the client environment to the same service key the server uses. The local forward needs no relay key, and you still pass local image paths when editing. The server only speaks REST and can't be registered as an MCP server directly; agents always connect through the local forward over stdio.
+
+To choose a local output directory, use this minimal forward config and pass its real absolute path with `-config`:
+
+```yaml
+mode: forward
+output_format: file # file | base64 | both; controls local Agent output
+output_dir: "" # IMAGE_OUTPUT_DIR / system temporary directory
+forward:
+  url: https://images.example.com
+  api_key: "" # IMAGES_MCP_FORWARD_KEY
+  timeout: 15m
+```
+
+For direct REST clients, see the [REST protocol](docs/rest.md) for the multipart manifest, Content-ID mapping, and response examples.
 
 ## More docs
 
 - [AGENTS.md](AGENTS.md): install, verification, and troubleshooting steps for agents
 - [DESIGN.md](DESIGN.md): architecture
+- [docs/rest.md](docs/rest.md): REST request and multipart/mixed response protocol
 - [images-mcp.example.yaml](images-mcp.example.yaml): full config template
 
 ## Development checks
@@ -175,4 +188,4 @@ go vet ./...
 go build -o bin/images-mcp .
 ```
 
-Tests run against local relay and S3 mocks and never call paid services.
+Tests run against local relay and REST mocks and never call paid services.

@@ -17,13 +17,11 @@ import (
 )
 
 type imageMetadata struct {
-	Path      string `json:"path,omitempty"`
-	URL       string `json:"url,omitempty"`
-	objectKey string
-	Base64    string `json:"base64,omitempty"`
-	data      []byte
-	MIMEType  string `json:"mime_type"`
-	Bytes     int    `json:"bytes"`
+	Path     string `json:"path,omitempty"`
+	Base64   string `json:"base64,omitempty"`
+	data     []byte
+	MIMEType string `json:"mime_type"`
+	Bytes    int    `json:"bytes"`
 }
 type generateOutput struct {
 	Model  string          `json:"model"`
@@ -31,9 +29,8 @@ type generateOutput struct {
 	Images []imageMetadata `json:"images"`
 }
 type service struct {
-	config  config
-	client  *http.Client
-	storage *objectStorage
+	config config
+	client *http.Client
 }
 
 // explicitFamily normalizes both aliases and rejects ambiguous selections.
@@ -393,15 +390,13 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 	defer func() {
 		if err != nil {
 			for _, img := range out.Images {
-				if img.objectKey != "" {
-					err = errors.Join(err, s.storage.remove(context.WithoutCancel(ctx), img.objectKey))
-				}
 				if img.Path != "" {
 					_ = os.Remove(img.Path)
 				}
 			}
 		}
 	}()
+	totalOutput := 0
 	for _, ref := range refs {
 		if err = ctx.Err(); err != nil {
 			return out, err
@@ -412,6 +407,10 @@ func (s *service) generate(ctx context.Context, in generateInput) (out generateO
 			return out, fmt.Errorf("save generated image: %w", err)
 		}
 		out.Images = append(out.Images, img)
+		totalOutput += img.Bytes
+		if s.config.file.Mode == "server" && totalOutput > maxTotalInputBytes {
+			return out, fmt.Errorf("generated images exceed total limit")
+		}
 	}
 	return out, nil
 }

@@ -10,7 +10,7 @@
 2. **不碰凭据。** 不猜测、不打印、不提交凭据，也不拿占位值去请求真实服务。缺凭据时，先完成不依赖凭据的本地构建和验证，再提醒用户自行安全配置中转 URL、Key 和实际可用的模型 ID。
 3. **模型协议要显式声明。** 每个模型都写明 `api: chat` 或 `api: images`，不要臆测哪些模型可用。
 4. **合并而非覆盖客户端配置。** 保留其他 MCP 条目。改完配置后重启服务和宿主客户端。
-5. **生成要有授权。** `list_models` 只能证明配置已加载、工具能连通，不能证明中转或 S3 权限正常。只有用户明确要求生成时才调用 `generate_image`；可能计费的请求失败后不自动重试，也不擅自换模型。
+5. **生成要有授权。** `list_models` 只能证明配置已加载、工具能连通，不能证明中转能正常出图。只有用户明确要求生成时才调用 `generate_image`；可能计费的请求失败后不自动重试，也不擅自换模型。
 6. **参考图传本地路径。** 本地参考图直接传绝对路径。服务部署在远端时，在 Agent 所在机器上运行 forward，由程序读取并发送文件。不要让 Agent 手写大段 Base64，也不要编造服务端本地路径。
 
 ## 步骤 1：获取二进制
@@ -146,7 +146,7 @@ images-mcp 有两种用法，先按用户场景选定一种：
 
 - **standalone**：本地 stdio MCP，直接请求中转。`file` / `both` 输出时把图片写到本地并返回绝对路径。
 - **server**：只提供 REST API，即 `GET /healthz`、`GET /v1/models`、`POST /v1/generate`，部署在远端，不能注册为 MCP。
-- **forward**：本地 stdio MCP，把工具调用转成对 server 的 REST 请求，并自动读取本地参考图、以 multipart 流式发送。它只需要远端 URL、服务密钥和超时，不会初始化中转或 S3。
+- **forward**：本地 stdio MCP，把工具调用转成对 server 的 REST 请求，并自动读取本地参考图、以 multipart 流式发送。它只解析远端连接设置和本机 output_format、output_dir，不会初始化中转或模型服务；完整校验远端响应后按本机 output_format 输出，不受 server 的格式覆盖。
 
 两种用法里，Agent 客户端连接的始终是本地 stdio 进程（standalone 或 forward）。
 
@@ -202,16 +202,18 @@ models:
 
 ### 用法二：远程服务 + 本地代理（server + forward）
 
-**远端 server**：中转和模型配置与 standalone 相同，改成 `mode: server`，再配置 `server.listen` 和 `server.api_key`（服务密钥）。输出为 `file` / `both` 时还必须配好 S3，见下文“Docker 部署与 S3”。server 不能作为 MCP 子进程注册。
+**远端 server**：中转和模型配置与 standalone 相同，改成 `mode: server`，再配置 `server.listen` 和 `server.api_key`（服务密钥）。生成结果通过 REST 二进制响应返回，见 [REST 响应协议](docs/rest.md)。server 不能作为 MCP 子进程注册。
 
 **本地 forward**：
 
 ```yaml
 mode: forward
+output_format: file # file | base64 | both，本机 Agent 输出语义
 forward:
   url: https://images.example.com
   api_key: ""
   timeout: 15m
+output_dir: "" # 本机输出目录；回退 IMAGE_OUTPUT_DIR / 系统临时目录
 ```
 
 把示例域名换成已验证的实际服务地址，不要把示例域名当成用户的服务。URL 可以带路径前缀，但不能带用户信息、查询参数或片段。服务密钥由宿主通过 `IMAGES_MCP_FORWARD_KEY` 注入，也支持 `FORWARD_KEY`、`MCP_FORWARD_KEY`（按此顺序查找）。
@@ -224,8 +226,8 @@ forward:
   - 默认值：standalone 模式、监听 `:8080`、forward 超时 15m。
 - **中转 URL / Key**：两者各自按 请求 > 模型 > family 配置 > family 环境变量 > `default` > 全局环境变量 解析。family 环境变量是 `GEMINI_BASE_URL` / `GEMINI_API_KEY` 和 `GPT_IMAGE_BASE_URL` / `GPT_IMAGE_API_KEY`，全局环境变量是 `OPENAI_BASE_URL` / `OPENAI_API_KEY`。REST 和 forward 不接受请求级的中转凭据或协议覆盖。
 - **超时**：请求 > 模型 > `default.timeout` > 顶层 `timeout` > `IMAGE_TIMEOUT` > 10m。接受正数 duration（如 `15m`）或秒数字符串。宿主自身更短的超时依然生效。
-- **输出格式**：顶层 `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`，只支持 `file` / `base64` / `both`。
-- **输出目录**（standalone）：`output_dir` 为空时依次回退到 `IMAGE_OUTPUT_DIR`、系统临时目录。
+- **输出格式**：顶层 `output_format` > `default.output_format` > `IMAGE_OUTPUT_FORMAT` > `file`，只支持 `file` / `base64` / `both`，无效值启动即报错。standalone 和 forward 使用相同优先级；forward 的本机设置决定 MCP 输出，server 的 REST 成功图片响应恒定为 multipart/mixed，忽略该输出选择。
+- **输出目录**（standalone / forward）：`output_dir` 为空时依次回退到 `IMAGE_OUTPUT_DIR`、系统临时目录。
 
 ## 步骤 3：注册 MCP 客户端
 
@@ -341,7 +343,7 @@ mcp_servers:
 
 ### Python 3 自动化握手测试
 
-在同一个 Shell 中执行，沿用已验证的 `ABS_BIN`、`ABS_CONFIG`，配置须为 standalone 或 forward。脚本只调用 `list_models`，不生成图片，也不验证中转或 S3 权限。每个响应最多等 15 秒（测试上限，可按网络情况调整）。stderr 被丢弃，以免回显敏感诊断信息；任何失败都会以非零码退出。协议为逐行 JSON-RPC，没有 Content-Length 头：
+在同一个 Shell 中执行，沿用已验证的 `ABS_BIN`、`ABS_CONFIG`，配置须为 standalone 或 forward。脚本只调用 `list_models`，不生成图片，也不验证中转权限。每个响应最多等 15 秒（测试上限，可按网络情况调整）。stderr 被丢弃，以免回显敏感诊断信息；任何失败都会以非零码退出。协议为逐行 JSON-RPC，没有 Content-Length 头：
 
 ```sh
 python3 - "$ABS_BIN" "$ABS_CONFIG" <<'PY'
@@ -492,23 +494,17 @@ curl --fail http://127.0.0.1:8080/healthz
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"generate_image","arguments":{"prompt":"保留主体，将背景改为水彩山景","timeout":"15m","input_images":["/absolute/path/source.png"]}}}
 ```
 
-本地路径必须换成实际存在且可读的图片。成功时，MCP 结果的文本内容是如下业务 JSON（示意数据，不代表已执行生成）：
+本地路径必须换成实际存在且可读的图片。成功时，MCP 结果的文本内容是如下业务 JSON（示意数据，不代表已执行生成）；standalone 与 forward 在 `file` / `both` 输出时都保存到本机 output_dir 并返回绝对路径：
 
 ```json
 {"model":"configured-model-id","images":[{"path":"/absolute/output/generated.png","mime_type":"image/png","bytes":1024}]}
-```
-
-server / forward 在 `file` / `both` 输出时返回 URL：
-
-```json
-{"model":"configured-model-id","images":[{"url":"https://storage.example.com/generated.png","mime_type":"image/png","bytes":1024}]}
 ```
 
 判定成功的条件：
 
 - `isError` 不为 true；结果包含 `model`、非空的 `images`，每张图都有 `mime_type` 和正数 `bytes`。
 - standalone `file` / `both`：含存在且可读的绝对 `path`。
-- server / forward `file` / `both`：含 `url`，不含 `path`。
+- forward `file` / `both`：含本机存在且可读的绝对 `path`；远端恒定返回 multipart/mixed 原始图片字节，不返回 Base64 或路径。
 - `base64` 不落盘；`both` 同时包含 Base64。只要含 Base64，结果中就会附带 MCP 原生图像内容。
 
 ## 步骤 5：排障与自愈矩阵 (Troubleshooting & Self-Healing Matrix)
@@ -520,7 +516,7 @@ multipart 的规则：
 - 参数要么全部放在 `request` JSON 字段里，要么全部用独立字段，不能混用。独立的 `input_images` 字段是 JSON 数组。
 - 文件用 `part:file_N` 引用，按 `input_images` 顺序还原。重复字段、引用缺失、文件未被引用都会被拒绝。
 - 只支持 PNG / JPEG / WebP。单图 ≤32 MiB，总图 ≤64 MiB，最多 16 张，请求体 ≤96 MiB，参数字段合计 ≤1 MiB。
-- 逐 part 有界解析，参考图不写临时文件，也不会单独上传到 S3。
+- 逐 part 有界解析，参考图不写临时文件。
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -531,16 +527,14 @@ multipart 的规则：
 | 图片加载失败 / MIME 不受支持 | 路径不可读、URL 拉取失败，或文件实际格式与扩展名不符 | 按 `input_images` 的序号核对客户端本地绝对路径；远端部署时用本地 forward；把文件真正转换成 PNG / JPEG / WebP，只改扩展名无效 |
 | 413 超过大小限制 | 单图、总图、数量或请求体超限 | 单图 ≤32 MiB、总图 ≤64 MiB、最多 16 张、请求体 ≤96 MiB、参数字段合计 ≤1 MiB；压缩图片或减少数量，不自动重试 |
 | `list_models` 返回空数组 | 加载了错误的配置，或 `models` 为空 | 核对实际的绝对配置路径和 `models`；forward 模式检查远端 server 的配置并重启。这不代表中转没有模型 |
-| server 启动报 S3 错误 | `file` / `both` 输出缺少 bucket 或完整的静态凭据 | 补齐已存在的 bucket、access key、secret key、region，按存储服务配置 endpoint / path-style；不要擅自改输出格式来绕过 |
-| 401/403 中转或存储错误 | 凭据错误或权限不足 | 安全配置真实凭据，检查是否被高优先级字段遮蔽，确认 PutObject / GetObject / DeleteObject 权限；不猜测、不输出凭据 |
+| forward 输出校验或写文件失败 | 远端响应畸形、截断、超限，或本地目录不可写 | 核对远端版本与 REST 协议，检查本机 output_dir 权限和空间；本次文件会清理，不自动重试生成 |
+| 401/403 中转错误 | 凭据错误或权限不足 | 安全配置真实凭据，检查是否被高优先级字段遮蔽，确认中转模型访问权限；不猜测、不输出凭据 |
 
-错误响应是带 `error` 字符串的 JSON。状态码含义：400 参数或 MIME 错误，401 鉴权失败，405 方法不允许，413 超出大小限制，500 中转或存储错误。修复后先做本地验证，不要自动发起真实生成。
+错误响应是带 `error` 字符串的 JSON。状态码含义：400 参数或 MIME 错误，401 鉴权失败，405 方法不允许，413 超出大小限制，500 中转错误。修复后先做本地验证，不要自动发起真实生成。
 
-## Docker 部署与 S3（server 模式）
+## Docker 部署（server 模式）
 
-server 以 `file` / `both` 输出时，必须配置已存在的桶和完整的静态凭据，支持 MinIO、RustFS、R2、AWS 等。凭据需要 PutObject / GetObject / DeleteObject 权限。R2 的 region 通常填 `auto`，自建存储需配置 endpoint 和 path-style。配置文件优先于环境变量，字段和回退规则见 [README](README.md#远程部署与-docker) 和配置模板。服务密钥、中转密钥、存储密钥相互独立。多图生成中途失败时，会清理已上传的对象并报告删除错误。
-
-返回的 URL 是公开 / CDN 前缀，或预签名 GET 链接（默认有效 24h，最长 168h；使用临时凭据时可能提前失效）。`base64` 输出完全在内存中，不需要 S3。forward 不下载生成结果的 URL、不落地生成文件，也不重试。
+server 生成结果保存在内存中，REST 成功图片响应恒定为 multipart/mixed 原始字节，不受 server 的 `output_format` 影响；该选项仅选择 standalone 与 forward 的本机 Agent 输出。forward 校验完整响应后按本机 `output_format` 输出：`file` 写本机 output_dir 并只返回绝对路径，`base64` 不落盘并返回 Base64 和 MCP 原生图片，`both` 同时返回路径与图片内容。协议和大小限制见 [REST 文档](docs/rest.md)。服务密钥和中转密钥相互独立。
 
 镜像 `ghcr.io/azicen/images-mcp:latest` 支持 amd64 / arm64，基于 Debian Bookworm Slim，以 UID/GID 10001 运行。生产环境请固定版本或摘要。宿主机上的配置文件必须能被该用户读取，并以只读方式挂载。不要把密钥复制进镜像，也不要输出包含密钥的 `docker inspect` 结果。
 
@@ -549,8 +543,6 @@ docker run -d --name images-mcp --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
   -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
-  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
   ghcr.io/azicen/images-mcp:latest \
   -config /etc/images-mcp/config.yaml -mode server -listen :8080
 curl --fail http://127.0.0.1:8080/healthz
@@ -560,4 +552,4 @@ curl --fail http://127.0.0.1:8080/healthz
 
 ## 开发验收
 
-运行 `go test -race -cover ./...`（覆盖率需超过 85%）、`go vet ./...` 和 `go build -o bin/images-mcp .`。测试使用本地模拟的中转和 S3，禁止发起真实的计费生成。
+运行 `go test -race -cover ./...`（覆盖率需超过 85%）、`go vet ./...` 和 `go build -o bin/images-mcp .`。测试使用本地模拟的中转和 REST 服务，禁止发起真实的计费生成。

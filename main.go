@@ -81,7 +81,6 @@ type fileConfig struct {
 	Mode         string                     `json:"mode,omitempty" yaml:"mode,omitempty"`
 	Forward      forwardConfig              `json:"forward,omitempty" yaml:"forward,omitempty"`
 	Server       serverConfig               `json:"server,omitempty" yaml:"server,omitempty"`
-	S3           s3Config                   `json:"s3,omitempty" yaml:"s3,omitempty"`
 	OutputFormat string                     `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 	Timeout      string                     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	DefaultModel string                     `json:"default_model" yaml:"default_model"`
@@ -171,12 +170,6 @@ func loadFileConfig(path string) (fileConfig, error) {
 	if err != nil {
 		return fileConfig{}, fmt.Errorf("invalid configuration %q", path)
 	}
-	var presence struct {
-		S3 map[string]any `yaml:"s3"`
-	}
-	if yaml.Unmarshal(b, &presence) == nil {
-		_, c.S3.pathStyleSet = presence.S3["use_path_style"]
-	}
 	return c, nil
 }
 
@@ -197,6 +190,39 @@ func loadConfig(paths ...string) (config, error) {
 		return config{}, err
 	}
 	return generationConfig(file)
+}
+
+// parseOutputFormat validates every configured layer so a shadowed typo still fails at startup.
+func parseOutputFormat(file fileConfig) (string, error) {
+	outputFormat := ""
+	for _, setting := range []struct{ name, value string }{
+		{"output_format", file.OutputFormat},
+		{"default.output_format", file.Default.OutputFormat},
+		{"IMAGE_OUTPUT_FORMAT", os.Getenv("IMAGE_OUTPUT_FORMAT")},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		value := strings.ToLower(setting.value)
+		switch value {
+		case "file", "base64", "both":
+		default:
+			return "", fmt.Errorf("%s: expected file, base64, or both", setting.name)
+		}
+		if outputFormat == "" {
+			outputFormat = value
+		}
+	}
+	return firstValue(outputFormat, "file"), nil
+}
+
+// resolveOutputDir applies output_dir > IMAGE_OUTPUT_DIR > system temp directory.
+func resolveOutputDir(file fileConfig) (string, error) {
+	dir, err := filepath.Abs(firstValue(file.OutputDir, os.Getenv("IMAGE_OUTPUT_DIR"), os.TempDir()))
+	if err != nil {
+		return "", fmt.Errorf("resolve output directory: %w", err)
+	}
+	return dir, nil
 }
 
 func generationConfig(file fileConfig) (config, error) {
@@ -222,47 +248,19 @@ func generationConfig(file fileConfig) (config, error) {
 			return config{}, fmt.Errorf("model %q: configure api or api_type for an unrecognized model prefix", name)
 		}
 	}
-	outputFormat := "file"
-	for _, setting := range []struct{ name, value string }{
-		{"output_format", file.OutputFormat},
-		{"default.output_format", file.Default.OutputFormat},
-		{"IMAGE_OUTPUT_FORMAT", os.Getenv("IMAGE_OUTPUT_FORMAT")},
-	} {
-		if setting.value == "" {
-			continue
-		}
-		value := strings.ToLower(setting.value)
-		switch value {
-		case "file", "base64", "both":
-		default:
-			return config{}, fmt.Errorf("%s: expected file, base64, or both", setting.name)
-		}
-	}
-	for _, value := range []string{file.OutputFormat, file.Default.OutputFormat, os.Getenv("IMAGE_OUTPUT_FORMAT")} {
-		if value != "" {
-			outputFormat = strings.ToLower(value)
-			break
-		}
+	outputFormat, err := parseOutputFormat(file)
+	if err != nil {
+		return config{}, err
 	}
 	c := config{
 		file:         file,
 		outputFormat: outputFormat,
 		baseURL:      os.Getenv("OPENAI_BASE_URL"), apiKey: os.Getenv("OPENAI_API_KEY"),
-		gemini:    credentials{os.Getenv("GEMINI_BASE_URL"), os.Getenv("GEMINI_API_KEY")},
-		gptImage:  credentials{os.Getenv("GPT_IMAGE_BASE_URL"), os.Getenv("GPT_IMAGE_API_KEY")},
-		outputDir: os.Getenv("IMAGE_OUTPUT_DIR"),
+		gemini:   credentials{os.Getenv("GEMINI_BASE_URL"), os.Getenv("GEMINI_API_KEY")},
+		gptImage: credentials{os.Getenv("GPT_IMAGE_BASE_URL"), os.Getenv("GPT_IMAGE_API_KEY")},
 	}
-	if file.OutputDir != "" {
-		c.outputDir = file.OutputDir
-	}
-	if c.outputDir == "" {
-		c.outputDir = os.TempDir()
-	}
-	c.outputDir, err = filepath.Abs(c.outputDir)
-	if err != nil {
-		return c, fmt.Errorf("resolve output directory: %w", err)
-	}
-	return c, nil
+	c.outputDir, err = resolveOutputDir(file)
+	return c, err
 }
 
 // parseTimeout accepts Go durations and integer seconds without overflowing.
@@ -407,7 +405,7 @@ func (c config) generationDescription() string {
 }
 
 func newServer(s *service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.5.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "images-mcp", Version: "0.6.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "generate_image", Description: s.config.generationDescription()}, func(ctx context.Context, _ *mcp.CallToolRequest, in generateInput) (*mcp.CallToolResult, generateOutput, error) {
 		out, err := s.generate(ctx, in)
 		if err != nil {
@@ -457,10 +455,6 @@ func run() error {
 		return err
 	}
 	c.file.Mode, c.file.Server = runtime.Mode, runtime.Server
-	store, err := newObjectStorage(c)
-	if err != nil {
-		return err
-	}
 	client := &http.Client{Timeout: 0, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
@@ -472,7 +466,7 @@ func run() error {
 	}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	svc := &service{config: c, client: client, storage: store}
+	svc := &service{config: c, client: client}
 	if c.file.Mode == "server" {
 		return serveHTTP(ctx, c.file.Server, newHTTPHandler(svc))
 	}

@@ -15,7 +15,7 @@ images-mcp 通过 OpenAI 兼容的中转接入 Gemini 和 GPT 图片模型，这
 ## 两种用法
 
 - **本地直连（standalone，默认）**：适合个人使用。本机进程直接请求中转，图片保存到本地；也可以设为 `base64`，图片只在内存中返回给客户端显示，不写文件。
-- **远程服务 + 本地代理（server + forward）**：适合团队或多台机器。远端 server 统一保管中转 Key，输出文件时把图片存进 S3；Agent 所在机器运行轻量的 forward，由它读取本地参考图并流式发给远端。
+- **远程服务 + 本地代理（server + forward）**：适合团队或多台机器。远端 server 统一保管中转 Key，通过 REST 返回图片，由 forward 按本机 `output_format` 返回文件、Base64 或两者；Agent 所在机器运行轻量的 forward，由它读取本地参考图并流式发给远端。
 
 ## 快速上手
 
@@ -91,7 +91,7 @@ args = ["-config", "/absolute/path/images-mcp.yaml"]
 
 ### 4. 验证连接
 
-重启后应能看到 `generate_image` 和 `list_models` 两个工具。让 Agent 调用一次 `list_models`，核对模型列表和默认模型是否与配置一致。这一步只说明配置已加载、工具能调通，不代表中转能正常出图，也不检查 S3 权限。
+重启后应能看到 `generate_image` 和 `list_models` 两个工具。让 Agent 调用一次 `list_models`，核对模型列表和默认模型是否与配置一致。这一步只说明配置已加载、工具能调通，不代表中转能正常出图。
 
 之后就可以直接说“给这个项目画个图标”，或者给出一张本地图片的绝对路径，说“保留主体，把背景换成山景”。
 
@@ -128,7 +128,7 @@ args = ["-config", "/absolute/path/images-mcp.yaml"]
 
 不传 `quality` / `size` 时使用模型配置的默认值。模型开启 `supports_custom_size` 后，自定义宽高会对齐到最近的 16 的倍数，例如 `1920x1080` 变成 `1920x1088`；对齐后单边不超过 3840px，长宽比在 1:3 到 3:1 之间，总像素在 655,360 到 8,294,400 之间。格式不对、尺寸超限，或模型不允许的尺寸都会直接报错。质量档位不受支持时，按配置回退到默认档位。`api: chat` 模型（如 Gemini）会忽略 `quality` 和 `size`。这些调整都会写在结果的 `notice` 字段里。
 
-输出为 `file` 或 `both` 时，本地直连返回文件路径，远程服务返回图片 URL；输出含 Base64 时，结果里还会附带 MCP 原生图片内容。生成失败不会自动重试，也不会换模型。
+输出为 `file` 或 `both` 时，本地直连与本地 forward 都返回本机绝对文件路径；输出含 Base64 时，结果里还会附带 MCP 原生图片内容。生成失败不会自动重试，也不会换模型。
 
 ### list_models
 
@@ -136,7 +136,7 @@ args = ["-config", "/absolute/path/images-mcp.yaml"]
 
 ## 远程部署与 Docker
 
-远端使用 `mode: server`，中转和模型配置照旧，另外用 `MCP_SERVER_KEY` 设置服务密钥（与中转 Key 是两回事）。输出为 `file` 或 `both` 时需要一个已存在的 S3 桶和访问凭据，MinIO、RustFS、R2、AWS 等兼容服务都可以；纯 `base64` 输出不需要 S3。具体字段见配置模板里的 `server` 和 `s3` 部分。
+远端使用 `mode: server`，中转和模型配置照旧，另外用 `MCP_SERVER_KEY` 设置服务密钥（与中转 Key 是两回事）。server 不落盘；REST 成功图片响应恒定为 `multipart/mixed` 原始二进制，server 的 `output_format` 不起作用。返回文件、Base64 还是两者，由 forward 所在机器的 `output_format` 决定，保存目录由本机 `output_dir` 指定，未配置时使用 `IMAGE_OUTPUT_DIR`，再回退系统临时目录。
 
 准备好配置文件和环境变量后启动容器。示例里的主机路径要换成实际路径，且配置文件必须能被容器用户（UID 10001）读取：
 
@@ -145,8 +145,6 @@ docker run -d --name images-mcp --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   --mount type=bind,src=/etc/images-mcp/config.yaml,dst=/etc/images-mcp/config.yaml,readonly \
   -e OPENAI_BASE_URL -e OPENAI_API_KEY -e MCP_SERVER_KEY \
-  -e S3_BUCKET -e S3_ENDPOINT -e S3_REGION -e S3_USE_PATH_STYLE \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
   ghcr.io/azicen/images-mcp:latest \
   -config /etc/images-mcp/config.yaml -mode server -listen :8080
 ```
@@ -159,12 +157,27 @@ docker run -d --name images-mcp --restart unless-stopped \
 ["-mode", "forward", "-forward-url", "https://images.example.com"]
 ```
 
-示例 URL 换成实际的服务地址，再在客户端环境里用 `IMAGES_MCP_FORWARD_KEY` 传入与服务端相同的服务密钥。本地 forward 不需要中转 Key 或 S3，改图时照样传本地图片路径。server 只提供 REST API，不能直接注册成 MCP，Agent 始终通过本地 forward 以 stdio 方式接入。
+示例 URL 换成实际的服务地址，再在客户端环境里用 `IMAGES_MCP_FORWARD_KEY` 传入与服务端相同的服务密钥。本地 forward 不需要中转 Key，改图时照样传本地图片路径。server 只提供 REST API，不能直接注册成 MCP，Agent 始终通过本地 forward 以 stdio 方式接入。
+
+需要固定本机输出目录时，给 forward 使用下面的精简配置，并通过 `-config` 传入配置文件的实际绝对路径：
+
+```yaml
+mode: forward
+output_format: file # file | base64 | both，由本机决定 Agent 输出
+output_dir: "" # 留空回退 IMAGE_OUTPUT_DIR / 系统临时目录
+forward:
+  url: https://images.example.com
+  api_key: "" # IMAGES_MCP_FORWARD_KEY
+  timeout: 15m
+```
+
+REST 直接调用的 multipart manifest、Content-ID 与响应示例见 [REST 协议](docs/rest.md)。
 
 ## 更多文档
 
 - [AGENTS.md](AGENTS.md)：供 Agent 使用的安装、验证与排障步骤
 - [DESIGN.md](DESIGN.md)：架构设计
+- [docs/rest.md](docs/rest.md)：REST 请求与 multipart/mixed 响应协议
 - [images-mcp.example.yaml](images-mcp.example.yaml)：完整配置模板
 
 ## 开发验证
@@ -175,4 +188,4 @@ go vet ./...
 go build -o bin/images-mcp .
 ```
 
-测试使用本地模拟的中转和 S3，不会调用真实的计费服务。
+测试使用本地模拟的中转和 REST 服务，不会调用真实的计费服务。

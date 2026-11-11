@@ -246,7 +246,7 @@ func TestForwardEndToEnd(t *testing.T) {
 	defer host.Close()
 	ctx := context.Background()
 	a, b := mcp.NewInMemoryTransports()
-	ss, err := newForwardServer(forwardConfig{URL: host.URL, Timeout: "1m"}).Connect(ctx, a, nil)
+	ss, err := newForwardServer(forwardConfig{outputFormat: "base64", URL: host.URL, Timeout: "1m"}).Connect(ctx, a, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,9 +333,6 @@ func TestForwardFailures(t *testing.T) {
 	f = newForwardClient(forwardConfig{URL: origin.URL, APIKey: "secret", Timeout: "1m"})
 	if err := f.call(context.Background(), "GET", "/v1/models", "", nil, &[]modelRecord{}); err == nil || leaked {
 		t.Fatal(err, leaked)
-	}
-	if _, err := imageToolResult(generateOutput{Images: []imageMetadata{{Base64: "invalid"}}}); err == nil {
-		t.Fatal("bad base64")
 	}
 }
 
